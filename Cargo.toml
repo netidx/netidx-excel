@@ -1,0 +1,12 @@
+[package]
+name = "netidx-excel"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+com = { version = "0.6", features = ["production"] }
+winapi = { version = "0.3", features = ["oaidl"]}
+oaidl = "0.2"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
