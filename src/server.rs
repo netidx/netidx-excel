@@ -4,9 +4,9 @@ use com::sys::{HRESULT, NOERROR};
 
 com::class! {
     #[derive(Debug)]
-    pub class RTDServer: IRTDServer {}
+    pub class NetidxRTD: IRTDServer {}
 
-    impl IRTDServer for RTDServer {
+    impl IRTDServer for NetidxRTD {
         fn server_start(&self, _cb: *const IRTDUpdateEvent, _res: *mut i32) -> HRESULT {
             NOERROR
         }
