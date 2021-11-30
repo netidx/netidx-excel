@@ -7,13 +7,29 @@ use winapi::{
     }, 
 };
 use com::{sys::{HRESULT, NOERROR, IID}};
+use once_cell::sync::Lazy;
+use log::{debug, LevelFilter};
+use simplelog;
+use std::fs::File;
+
+static LOGGER: Lazy<()> = Lazy::new(|| {
+    let f = File::create("C:\\Users\\eric\\proj\\netidx-excel\\log.txt")
+        .expect("couldn't open log file");
+    simplelog::WriteLogger::init(LevelFilter::Debug, simplelog::Config::default(), f)
+        .expect("couldn't init log")
+});
 
 com::class! {
     #[derive(Debug)]
     pub class NetidxRTD: IRTDServer(IDispatch) {}
 
     impl IDispatch for NetidxRTD {
-        fn get_type_info_count(&self, _info: *mut UINT) -> HRESULT { NOERROR }
+        fn get_type_info_count(&self, info: *mut UINT) -> HRESULT { 
+            *LOGGER;
+            debug!("get_type_info_count: {}", unsafe { *info });
+            unsafe { *info = 0; } // no we don't support type info
+            NOERROR 
+        }
         fn get_type_info(&self, _lcid: LCID, _type_info: *mut *mut ITypeInfo) -> HRESULT { NOERROR }
 
         pub fn get_ids_of_names(
