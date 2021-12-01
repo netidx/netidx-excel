@@ -3,14 +3,15 @@ use winapi::{
     shared::{minwindef::{WORD, UINT}, wtypesbase::LPOLESTR},
     um::{
         oaidl::{SAFEARRAY, VARIANT, ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO}, 
-        winnt::LCID
+        winnt::LCID,
+        winbase::lstrlenW
     }, 
 };
 use com::{sys::{HRESULT, NOERROR, IID}};
 use once_cell::sync::Lazy;
 use log::{debug, LevelFilter};
 use simplelog;
-use std::fs::File;
+use std::{fs::File, os::windows::ffi::OsStringExt, ffi::OsString};
 
 static LOGGER: Lazy<()> = Lazy::new(|| {
     let f = File::create("C:\\Users\\eric\\proj\\netidx-excel\\log.txt")
@@ -19,14 +20,18 @@ static LOGGER: Lazy<()> = Lazy::new(|| {
         .expect("couldn't init log")
 });
 
+fn maybe_init_logger() {
+    *LOGGER
+}
+
 com::class! {
     #[derive(Debug)]
     pub class NetidxRTD: IRTDServer(IDispatch) {}
 
     impl IDispatch for NetidxRTD {
         fn get_type_info_count(&self, info: *mut UINT) -> HRESULT { 
-            *LOGGER;
-            debug!("get_type_info_count: {}", unsafe { *info });
+            maybe_init_logger();
+            debug!("get_type_info_count(info: {})", unsafe { *info });
             unsafe { *info = 0; } // no we don't support type info
             NOERROR 
         }
@@ -34,13 +39,23 @@ com::class! {
 
         pub fn get_ids_of_names(
             &self, 
-            _riid: *const IID, 
-            _names: *const LPOLESTR, 
-            _names_len: UINT, 
-            _lcid: LCID, 
-            _ids: *mut DISPID
+            riid: *const IID, 
+            names: *const LPOLESTR, 
+            names_len: UINT, 
+            lcid: LCID, 
+            ids: *mut DISPID
         ) -> HRESULT {
-            std::fs::write("C:\\Users\\eric\\proj\\netidx-excel\\log.txt", "ids of names called").unwrap();
+            maybe_init_logger();
+            debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
+            let names = unsafe { std::slice::from_raw_parts(names, names_len as usize) };
+            for name in names {
+                let name = unsafe { std::slice::from_raw_parts(*name, lstrlenW(*name) as usize) };
+                let s = OsString::from_wide(name);
+                match s.into_string() {
+                    Err(_) => debug!("excel sent us invalid unicode"),
+                    Ok(s) => debug!("name: {}", s)
+                }
+            }
             NOERROR
         }
 
