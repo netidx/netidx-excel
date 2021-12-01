@@ -58,6 +58,10 @@ com::class! {
                         match s.as_str() {
                             "ServerStart" => unsafe { *ids.offset(i as isize) = 0; },
                             "ServerTerminate" => unsafe { *ids.offset(i as isize) = 1; }
+                            "ConnectData" => unsafe { *ids.offset(i as isize) = 2; }
+                            "RefreshData" => unsafe { *ids.offset(i as isize) = 3; }
+                            "DisconnectData" => unsafe { *ids.offset(i as isize) = 4; }
+                            "Heartbeat" => unsafe { *ids.offset(i as isize) = 5; }
                             _ => debug!("unknown method: {}", s)
                         }
                     }
