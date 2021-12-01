@@ -48,12 +48,19 @@ com::class! {
             maybe_init_logger();
             debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
             let names = unsafe { std::slice::from_raw_parts(names, names_len as usize) };
-            for name in names {
+            for (i, name) in names.iter().enumerate() {
                 let name = unsafe { std::slice::from_raw_parts(*name, lstrlenW(*name) as usize) };
                 let s = OsString::from_wide(name);
                 match s.into_string() {
                     Err(_) => debug!("excel sent us invalid unicode"),
-                    Ok(s) => debug!("name: {}", s)
+                    Ok(s) => {
+                        debug!("name: {}", s);
+                        match s.as_str() {
+                            "ServerStart" => unsafe { *ids.offset(i as isize) = 0; },
+                            "ServerTerminate" => unsafe { *ids.offset(i as isize) = 1; }
+                            _ => debug!("unknown method: {}", s)
+                        }
+                    }
                 }
             }
             NOERROR
@@ -61,20 +68,26 @@ com::class! {
 
         fn invoke(
             &self, 
-            _id: DISPID, 
-            _iid: *const IID, 
-            _lcid: LCID, 
-            _flags: WORD, 
-            _params: *mut DISPPARAMS,
-            _result: *mut VARIANT,
-            _exception: *mut EXCEPINFO,
-            _arg_error: *mut UINT
-        ) -> HRESULT { NOERROR }
+            id: DISPID, 
+            iid: *const IID, 
+            lcid: LCID, 
+            flags: WORD, 
+            params: *mut DISPPARAMS,
+            result: *mut VARIANT,
+            exception: *mut EXCEPINFO,
+            arg_error: *mut UINT
+        ) -> HRESULT { 
+            maybe_init_logger();
+            debug!(
+                "invoke(id: {}, iid: {:?}, lcid: {}, flags: {}, params: {:?}, result: {:?}, exception: {:?}, arg_error: {:?})", 
+                id, iid, lcid, flags, params, result, exception, arg_error
+            );
+            NOERROR 
+        }
     }
 
     impl IRTDServer for NetidxRTD {
         fn server_start(&self, _cb: *const IRTDUpdateEvent, _res: *mut i32) -> HRESULT {
-            std::fs::write("C:\\Users\\eric\\proj\\netidx-excel\\log.txt", "I was initialized").unwrap();
             NOERROR
         }
 
