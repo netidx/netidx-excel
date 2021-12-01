@@ -7,6 +7,7 @@ use winapi::{
         winbase::lstrlenW
     }, 
 };
+use oaidl::{VariantExt, SafeArrayExt};
 use com::{sys::{HRESULT, NOERROR, IID}};
 use once_cell::sync::Lazy;
 use log::{debug, LevelFilter};
@@ -86,6 +87,12 @@ com::class! {
                 "invoke(id: {}, iid: {:?}, lcid: {}, flags: {}, params: {:?}, result: {:?}, exception: {:?}, arg_error: {:?})", 
                 id, iid, lcid, flags, params, result, exception, arg_error
             );
+            unsafe {
+                for i in 0..(*params).cArgs as usize {
+                    let arg = (*params).rgvarg.offset(i as isize);
+                    debug!("arg type: {}", (*arg).n1.n2().vt);
+                }
+            }
             NOERROR 
         }
     }
