@@ -1,4 +1,4 @@
-use crate::com::interface::{
+use crate::comglue::interface::{
     IDispatch,
     IRTDServer, 
     IRTDUpdateEvent, 
@@ -57,7 +57,7 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
 // Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
 // however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
 // interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
-struct IRTDUpdateEventWrap {
+pub(crate) struct IRTDUpdateEventWrap {
     ptr: *mut um::oaidl::IDispatch,
     iid: GUID,
     update_notify_id: DISPID,
@@ -97,7 +97,7 @@ impl IRTDUpdateEventWrap {
         }
     }
 
-    fn update_notify(&self) {
+    pub(crate) fn update_notify(&self) {
         let mut args = [];
         let mut named_args = [];
         let mut params = DISPPARAMS {

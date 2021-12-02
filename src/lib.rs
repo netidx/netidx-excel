@@ -1,3 +1,4 @@
+#[macro_use] extern crate netidx_core;
 mod comglue;
 mod server;
 use comglue::interface::CLSID;
