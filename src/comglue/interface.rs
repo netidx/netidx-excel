@@ -1,10 +1,28 @@
-use com::{interfaces::IUnknown, sys::{HRESULT, IID}};
+use com::{interfaces::IUnknown, sys::{HRESULT, IID, NOERROR}};
+use log::{debug, LevelFilter};
+use oaidl::{SafeArrayExt, VariantExt, VtNull};
+use once_cell::sync::Lazy;
+use simplelog;
+use std::{
+    ffi::OsString,
+    fs::File,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+    ptr,
+};
 use winapi::{
-    shared::{minwindef::{WORD, UINT}, wtypesbase::LPOLESTR},
+    shared::{
+        guiddef::GUID,
+        minwindef::{UINT, WORD},
+        wtypes::VT_DISPATCH,
+        wtypesbase::LPOLESTR,
+    },
     um::{
-        oaidl::{SAFEARRAY, VARIANT, ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO}, 
-        winnt::LCID
-    }, 
+        self,
+        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT},
+        oleauto::DISPATCH_METHOD,
+        winbase::lstrlenW,
+        winnt::LCID,
+    },
 };
 
 // bde5f32a-14d9-414e-a0af-8390a1601944
@@ -64,3 +82,4 @@ com::interfaces! {
         pub fn server_terminate(&self) -> HRESULT;
     }
 }
+
