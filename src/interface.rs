@@ -42,7 +42,7 @@ com::interfaces! {
     }
 
     #[uuid("A43788C1-D91B-11D3-8F39-00C04F3651B8")]
-    pub unsafe interface IRTDUpdateEvent: IDispatch{
+    pub unsafe interface IRTDUpdateEvent: IDispatch {
         pub fn update_notify(&self) -> HRESULT;
         pub fn heartbeat_interval(&self, hb: *mut i32) -> HRESULT;
         pub fn disconnect(&self) -> HRESULT;
@@ -61,5 +61,6 @@ com::interfaces! {
         pub fn refresh_data(&self, topic_count: *mut i32, data: *mut SAFEARRAY) -> HRESULT;
         pub fn disconnect_data(&self, topic_id: i32) -> HRESULT;
         pub fn heartbeat(&self, res: *mut i32) -> HRESULT;
+        pub fn server_terminate(&self) -> HRESULT;
     }
 }
