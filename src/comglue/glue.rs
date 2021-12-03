@@ -19,12 +19,13 @@ use std::{
     marker::{Send, Sync},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
+    cell::RefCell,
 };
 use winapi::{
     shared::{
         guiddef::GUID,
         minwindef::{UINT, WORD},
-        wtypes::VT_DISPATCH,
+        wtypes,
         wtypesbase::LPOLESTR,
     },
     um::{
@@ -138,7 +139,7 @@ impl IRTDUpdateEventWrap {
 com::class! {
     #[derive(Debug)]
     pub class NetidxRTD: IRTDServer(IDispatch) {
-        server: Option<Server>,
+        server: RefCell<Option<Server>>,
     }
 
     impl IDispatch for NetidxRTD {
@@ -150,6 +151,7 @@ com::class! {
             }
             NOERROR
         }
+
         fn get_type_info(&self, _lcid: LCID, _type_info: *mut *mut ITypeInfo) -> HRESULT { NOERROR }
 
         pub fn get_ids_of_names(
@@ -162,7 +164,7 @@ com::class! {
         ) -> HRESULT {
             maybe_init_logger();
             debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
-            if !ids.is_null() && !names.is_null() && !riid.is_null() && unsafe { (*riid) == IID_IRTDSERVER } {
+            if !ids.is_null() && !names.is_null() {
                 for i in 0..names_len {
                     let name = unsafe { string_from_wstr(*names.offset(i as isize)) };
                     let name = name.to_string_lossy();
@@ -200,7 +202,14 @@ com::class! {
             assert!(!params.is_null());
             match id {
                 0 => {
-                    debug!("ServerStart called")
+                    debug!("ServerStart called");
+                    if self.server.borrow().is_none() {
+                        debug!("starting netidx rtd server");
+                        let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
+                        let updates = IRTDUpdateEventWrap::new(*updates);
+                        *self.server.borrow_mut() = Some(Server::new(updates).expect("failed to start server"));
+                        unsafe { *(*result).n1.n2_mut().n3.lVal_mut() = 1; }
+                    }
                 },
                 1 => {
                     debug!("ServerTerminate called")
