@@ -1,4 +1,7 @@
-use com::{interfaces::IUnknown, sys::{HRESULT, IID}};
+use com::{
+    interfaces::IUnknown,
+    sys::{HRESULT, IID},
+};
 use winapi::{
     shared::{
         minwindef::{UINT, WORD},
@@ -24,19 +27,19 @@ com::interfaces! {
         pub fn get_type_info_count(&self, info: *mut UINT) -> HRESULT;
         pub fn get_type_info(&self, lcid: LCID, type_info: *mut *mut ITypeInfo) -> HRESULT;
         pub fn get_ids_of_names(
-            &self, 
-            riid: *const IID, 
-            names: *const LPOLESTR, 
-            names_len: UINT, 
-            lcid: LCID, 
+            &self,
+            riid: *const IID,
+            names: *const LPOLESTR,
+            names_len: UINT,
+            lcid: LCID,
             ids: *mut DISPID
         ) -> HRESULT;
         pub fn invoke(
-            &self, 
-            id: DISPID, 
-            iid: *const IID, 
-            lcid: LCID, 
-            flags: WORD, 
+            &self,
+            id: DISPID,
+            iid: *const IID,
+            lcid: LCID,
+            flags: WORD,
             params: *mut DISPPARAMS,
             result: *mut VARIANT,
             exception: *mut EXCEPINFO,
@@ -55,10 +58,10 @@ com::interfaces! {
     pub unsafe interface IRTDServer: IDispatch {
         pub fn server_start(&self, cb: *const IRTDUpdateEvent, res: *mut i32) -> HRESULT;
         pub fn connect_data(
-            &self, 
-            topic_id: i32, 
-            topic: *const SAFEARRAY, 
-            get_new_values: *mut VARIANT, 
+            &self,
+            topic_id: i32,
+            topic: *const SAFEARRAY,
+            get_new_values: *mut VARIANT,
             res: *mut VARIANT
         ) -> HRESULT;
         pub fn refresh_data(&self, topic_count: *mut i32, data: *mut SAFEARRAY) -> HRESULT;
@@ -67,4 +70,3 @@ com::interfaces! {
         pub fn server_terminate(&self) -> HRESULT;
     }
 }
-

@@ -1,12 +1,14 @@
-use crate::comglue::interface::{
-    IDispatch,
-    IRTDServer, 
-    IRTDUpdateEvent, 
-    IID_IDISPATCH, 
-    IID_IRTDSERVER, 
-    IID_IRTDUPDATE_EVENT
+use crate::{
+    comglue::interface::{
+        IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH, IID_IRTDSERVER,
+        IID_IRTDUPDATE_EVENT,
+    },
+    server::{Server, TopicId},
 };
-use com::{interfaces::IUnknown, sys::{HRESULT, IID, NOERROR}};
+use com::{
+    interfaces::IUnknown,
+    sys::{HRESULT, IID, NOERROR},
+};
 use log::{debug, LevelFilter};
 use oaidl::{SafeArrayExt, VariantExt, VtNull};
 use once_cell::sync::Lazy;
@@ -14,9 +16,9 @@ use simplelog;
 use std::{
     ffi::OsString,
     fs::File,
+    marker::{Send, Sync},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
-    marker::{Send, Sync}
 };
 use winapi::{
     shared::{
@@ -66,6 +68,7 @@ pub(crate) struct IRTDUpdateEventWrap {
     disconnect_id: DISPID,
 }
 
+// CR estokes: verify that this is ok. Somehow ...
 unsafe impl Send for IRTDUpdateEventWrap {}
 unsafe impl Sync for IRTDUpdateEventWrap {}
 
@@ -87,8 +90,9 @@ impl IRTDUpdateEventWrap {
             Data3: IID_IRTDUPDATE_EVENT.data3,
             Data4: IID_IRTDUPDATE_EVENT.data4,
         };
-        let res =
-            unsafe { (*ptr).GetIDsOfNames(&iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr()) };
+        let res = unsafe {
+            (*ptr).GetIDsOfNames(&iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
+        };
         if res != NOERROR {
             panic!("IRTDUpdateEventWrap: could not get names {}", res);
         }
@@ -110,7 +114,8 @@ impl IRTDUpdateEventWrap {
             cArgs: 0,
             cNamedArgs: 0,
         };
-        let mut _result = VariantExt::into_variant(VtNull).expect("couldn't create result variant");
+        let mut _result =
+            VariantExt::into_variant(VtNull).expect("couldn't create result variant");
         let mut _arg_err = 0;
         let res = unsafe {
             (*self.ptr).Invoke(
@@ -132,7 +137,9 @@ impl IRTDUpdateEventWrap {
 
 com::class! {
     #[derive(Debug)]
-    pub class NetidxRTD: IRTDServer(IDispatch) {}
+    pub class NetidxRTD: IRTDServer(IDispatch) {
+        server: Option<Server>,
+    }
 
     impl IDispatch for NetidxRTD {
         fn get_type_info_count(&self, info: *mut UINT) -> HRESULT {
