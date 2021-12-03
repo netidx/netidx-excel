@@ -61,12 +61,17 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
 // Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
 // however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
 // interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
-pub(crate) struct IRTDUpdateEventWrap {
-    ptr: *mut um::oaidl::IDispatch,
-    iid: GUID,
+
+struct DispIds {
     update_notify_id: DISPID,
     heartbeat_interval_id: DISPID,
     disconnect_id: DISPID,
+}
+
+pub(crate) struct IRTDUpdateEventWrap {
+    ptr: *mut um::oaidl::IDispatch,
+    iid: GUID,
+    dispids: Option<DispIds>,
 }
 
 // CR estokes: verify that this is ok. Somehow ...
@@ -74,8 +79,7 @@ unsafe impl Send for IRTDUpdateEventWrap {}
 unsafe impl Sync for IRTDUpdateEventWrap {}
 
 impl IRTDUpdateEventWrap {
-    fn new(ptr: *mut um::oaidl::IDispatch) -> Self {
-        assert!(!ptr.is_null());
+    fn get_dispids(&mut self) {
         let mut update_notify = str_to_wstr("UpdateNotify");
         let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
         let mut disconnect = str_to_wstr("Disconnect");
@@ -85,28 +89,39 @@ impl IRTDUpdateEventWrap {
             disconnect.as_mut_ptr(),
         ];
         let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
+        let res = unsafe {
+            (*self.ptr).GetIDsOfNames(&self.iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
+        };
+        if res != NOERROR {
+            panic!("IRTDUpdateEventWrap: could not get names {}", res);
+        }
+        self.dispids = Some(DispIds {
+            update_notify_id: dispids[0],
+            heartbeat_interval_id: dispids[1],
+            disconnect_id: dispids[2],
+        });
+    }
+
+    fn new(ptr: *mut um::oaidl::IDispatch) -> Self {
+        assert!(!ptr.is_null());
         let iid = GUID {
             Data1: IID_IRTDUPDATE_EVENT.data1,
             Data2: IID_IRTDUPDATE_EVENT.data2,
             Data3: IID_IRTDUPDATE_EVENT.data3,
             Data4: IID_IRTDUPDATE_EVENT.data4,
         };
-        let res = unsafe {
-            (*ptr).GetIDsOfNames(&iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
-        };
-        if res != NOERROR {
-            panic!("IRTDUpdateEventWrap: could not get names {}", res);
-        }
         IRTDUpdateEventWrap {
             ptr,
             iid,
-            update_notify_id: dispids[0],
-            heartbeat_interval_id: dispids[1],
-            disconnect_id: dispids[2],
+            dispids: None,
         }
     }
 
-    pub(crate) fn update_notify(&self) {
+    pub(crate) fn update_notify(&mut self) {
+        if self.dispids.is_none() {
+            self.get_dispids();
+        }
+        let update_notify_id = self.dispids.as_ref().unwrap().update_notify_id;
         let mut args = [];
         let mut named_args = [];
         let mut params = DISPPARAMS {
@@ -120,7 +135,7 @@ impl IRTDUpdateEventWrap {
         let mut _arg_err = 0;
         let res = unsafe {
             (*self.ptr).Invoke(
-                self.update_notify_id,
+                update_notify_id,
                 &self.iid,
                 0,
                 DISPATCH_METHOD,
@@ -208,6 +223,7 @@ com::class! {
                         let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
                         let updates = IRTDUpdateEventWrap::new(*updates);
                         *self.server.borrow_mut() = Some(Server::new(updates).expect("failed to start server"));
+                        debug!("server started");
                         unsafe { *(*result).n1.n2_mut().n3.lVal_mut() = 1; }
                     }
                 },
