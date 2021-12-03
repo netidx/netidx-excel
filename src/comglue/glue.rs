@@ -16,6 +16,7 @@ use std::{
     fs::File,
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
+    marker::{Send, Sync}
 };
 use winapi::{
     shared::{
@@ -64,6 +65,9 @@ pub(crate) struct IRTDUpdateEventWrap {
     heartbeat_interval_id: DISPID,
     disconnect_id: DISPID,
 }
+
+unsafe impl Send for IRTDUpdateEventWrap {}
+unsafe impl Sync for IRTDUpdateEventWrap {}
 
 impl IRTDUpdateEventWrap {
     fn new(ptr: *mut um::oaidl::IDispatch) -> Self {

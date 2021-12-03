@@ -13,8 +13,10 @@ once_cell = "1"
 parking_lot = "0.11"
 netidx = "0.10"
 netidx-core = "0.10"
-tokio = "1"
+tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+fxhash = "0.2"
+anyhow = "1"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
