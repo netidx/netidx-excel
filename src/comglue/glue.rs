@@ -32,7 +32,7 @@ use winapi::{
     um::{
         self,
         oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT},
-        oleauto::DISPATCH_METHOD,
+        oleauto::{DISPATCH_METHOD, SafeArrayGetLBound, SafeArrayGetUBound},
         winbase::lstrlenW,
         winnt::LCID,
     },
@@ -224,7 +224,9 @@ com::class! {
             match id {
                 0 => {
                     debug!("ServerStart");
+                    debug!("{}", unsafe { (*(*params).rgvarg).n1.n2().vt });
                     let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
+                    debug!("{:?}", updates);
                     self.server.server_start(IRTDUpdateEventWrap::new(*updates));
                     unsafe { variant_ok(result); }
                 },
@@ -236,8 +238,23 @@ com::class! {
                 2 => {
                     debug!("ConnectData");
                     assert!(unsafe { (*params).cArgs == 3 });
-                    let topic_id = unsafe { *(*(*params).rgvarg).n1.n2().n3.lVal() };
+                    debug!("{}", unsafe { (*(*params).rgvarg).n1.n2().vt });
+                    debug!("{}", unsafe { (*(*params).rgvarg.offset(1)).n1.n2().vt });
+                    debug!("{}", unsafe { (*(*params).rgvarg.offset(2)).n1.n2().vt });
+                    let topic_id = unsafe { *(*(*params).rgvarg.offset(2)).n1.n2().n3.lVal() };
+                    debug!("{}", unsafe { (*(*params).rgvarg.offset(1)).n1.n2().vt });
                     let topics = unsafe { *(*(*params).rgvarg.offset(1)).n1.n2().n3.parray() };
+                    let mut lbound = 0;
+                    let mut ubound = 0;
+                    unsafe { 
+                        debug!("lbound res: {}", SafeArrayGetLBound(topics, 1, &mut lbound));
+                        debug!("ubound res: {}", SafeArrayGetUBound(topics, 1, &mut ubound));
+                    };
+                    debug!("topic_id: {}, lbound: {}, ubound: {}", topic_id, lbound, ubound);
+                    debug!("{}", unsafe { (*(*topics).pvData.cast::<VARIANT>()).n1.n2().vt });
+                    let path = unsafe { string_from_wstr(*(*(*topics).pvData.cast::<VARIANT>()).n1.n2().n3.bstrVal()) };
+                    debug!("{}", path.to_string_lossy());
+                    unsafe { variant_ok(result); }
                 },
                 3 => {
                     debug!("RefreshData")
