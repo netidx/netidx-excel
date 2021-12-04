@@ -96,7 +96,7 @@ impl Server {
         debug!("init subscriber");
         let subscriber = runtime.block_on(async {
             let config = Config::load_default().expect("could not load netidx config");
-            Subscriber::new(config, Auth::Anonymous)
+            Subscriber::new(config, Auth::Krb5 {spn: None, upn: None})
         }).expect("could not init netidx subscriber");
         let (tx, rx) = runtime.block_on(async { mpsc::channel(3) });
         let t = Server(Arc::new(Mutex::new(ServerInner {
