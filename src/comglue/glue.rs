@@ -5,11 +5,13 @@ use crate::{
     },
     server::{Server, TopicId},
 };
+use anyhow::{bail, Result};
 use com::{
     interfaces::IUnknown,
     sys::{HRESULT, IID, NOERROR},
 };
 use log::{debug, LevelFilter};
+use netidx::path::Path;
 use oaidl::{SafeArrayExt, VariantExt, VtNull};
 use once_cell::sync::Lazy;
 use simplelog;
@@ -19,8 +21,8 @@ use std::{
     marker::{Send, Sync},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
-    cell::RefCell,
 };
+use arcstr::ArcStr;
 use winapi::{
     shared::{
         guiddef::GUID,
@@ -157,6 +159,107 @@ impl IRTDUpdateEventWrap {
     }
 }
 
+struct VariantArray(*mut SAFEARRAY);
+
+impl VariantArray {
+    fn new(p: *mut SAFEARRAY) -> Self {
+        VariantArray(p)
+    }
+
+    unsafe fn len(&self) -> usize {
+        let mut lbound = 0;
+        let mut ubound = 0;
+        SafeArrayGetLBound(self.0, 1, &mut lbound);
+        SafeArrayGetUBound(self.0, 1, &mut ubound);
+        (1 + ubound - lbound) as usize
+    }
+
+    unsafe fn get(&self, i: isize) -> Variant {
+        Variant::new((*self.0).pvData.cast::<VARIANT>().offset(i))
+    }
+}
+
+struct Variant(*mut VARIANT);
+
+impl Variant {
+    fn new(p: *mut VARIANT) -> Self {
+        Variant(p)
+    }
+
+    unsafe fn typ(&self) -> u16 {
+        (*self.0).n1.n2().vt
+    }
+
+    unsafe fn as_long(&self) -> Result<i32> {
+        if self.typ() == wtypes::VT_I4 as u16 {
+            Ok(*(*self.0).n1.n2().n3.lVal())
+        } else {
+            bail!("not a long value")
+        }
+    }
+
+    unsafe fn as_path(&self) -> Result<Path> {
+        if self.typ() == wtypes::VT_BSTR as u16 {
+            let path = *(*self.0).n1.n2().n3.bstrVal();
+            let path = string_from_wstr(path);
+            Ok(Path::from(ArcStr::from(&*path.to_string_lossy())))
+        } else {
+            bail!("not a string value")
+        }
+    }
+
+    unsafe fn as_variant_array(&self) -> Result<VariantArray> {
+        if self.typ() == (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16 {
+            Ok(VariantArray::new(*(*self.0).n1.n2().n3.parray()))
+        } else {
+            bail!("not a variant array")
+        }
+    }
+}
+
+struct Params(*mut DISPPARAMS);
+
+impl Params {
+    fn new(ptr: *mut DISPPARAMS) -> Result<Self> {
+        if ptr.is_null() {
+            bail!("invalid params")
+        }
+        Ok(Params(ptr))
+    }
+
+    unsafe fn len(&self) -> usize {
+        (*self.0).cArgs as usize
+    }
+
+    unsafe fn get(&self, i: isize) -> Variant {
+        Variant::new((*self.0).rgvarg.offset(i))
+    }
+}
+
+struct ConnectDataArgs {
+    topic_id: i32,
+    path: Path
+}
+
+impl ConnectDataArgs {
+    unsafe fn new(params: *mut DISPPARAMS) -> Result<Self> {
+        let params = Params::new(params)?;
+        if params.len() != 3 {
+            bail!("wrong number of args")
+        }
+        let topic_id = params.get(2).as_long()?;
+        let topics = params.get(1).as_variant_array()?;
+        if topics.len() == 0 {
+            bail!("not enough topics")
+        }
+        let path = topics.get(0).as_path()?;
+        Ok(Self {
+            topic_id,
+            path
+        })
+    }
+}
+
 com::class! {
     #[derive(Debug)]
     pub class NetidxRTD: IRTDServer(IDispatch) {
@@ -237,23 +340,6 @@ com::class! {
                 },
                 2 => {
                     debug!("ConnectData");
-                    assert!(unsafe { (*params).cArgs == 3 });
-                    debug!("{}", unsafe { (*(*params).rgvarg).n1.n2().vt });
-                    debug!("{}", unsafe { (*(*params).rgvarg.offset(1)).n1.n2().vt });
-                    debug!("{}", unsafe { (*(*params).rgvarg.offset(2)).n1.n2().vt });
-                    let topic_id = unsafe { *(*(*params).rgvarg.offset(2)).n1.n2().n3.lVal() };
-                    debug!("{}", unsafe { (*(*params).rgvarg.offset(1)).n1.n2().vt });
-                    let topics = unsafe { *(*(*params).rgvarg.offset(1)).n1.n2().n3.parray() };
-                    let mut lbound = 0;
-                    let mut ubound = 0;
-                    unsafe { 
-                        debug!("lbound res: {}", SafeArrayGetLBound(topics, 1, &mut lbound));
-                        debug!("ubound res: {}", SafeArrayGetUBound(topics, 1, &mut ubound));
-                    };
-                    debug!("topic_id: {}, lbound: {}, ubound: {}", topic_id, lbound, ubound);
-                    debug!("{}", unsafe { (*(*topics).pvData.cast::<VARIANT>()).n1.n2().vt });
-                    let path = unsafe { string_from_wstr(*(*(*topics).pvData.cast::<VARIANT>()).n1.n2().n3.bstrVal()) };
-                    debug!("{}", path.to_string_lossy());
                     unsafe { variant_ok(result); }
                 },
                 3 => {

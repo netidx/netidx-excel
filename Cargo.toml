@@ -17,6 +17,7 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 fxhash = "0.2"
 anyhow = "1"
+arcstr = "1"
 
 [lib]
 crate-type = ["rlib", "cdylib"]
