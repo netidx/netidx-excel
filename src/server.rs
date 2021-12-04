@@ -22,7 +22,7 @@ use tokio::runtime::Runtime;
 use log::debug;
 
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub(crate) struct TopicId(i32);
+pub(crate) struct TopicId(pub i32);
 
 static PENDING: Lazy<Pool<FxHashMap<TopicId, Event>>> =
     Lazy::new(|| Pool::new(3, 1_000_000));
@@ -142,6 +142,7 @@ impl Server {
     pub(crate) fn disconnect_data(&self, tid: TopicId) {
         debug!("disconnect_data");
         let mut inner = self.0.lock();
+        inner.pending.remove(&tid);
         if let Some(dv) = inner.by_topic.remove(&tid) {
             if let Some(tids) = inner.by_id.get_mut(&dv.id()) {
                 tids.remove(&tid);

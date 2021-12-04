@@ -10,7 +10,7 @@ use com::{
     interfaces::IUnknown,
     sys::{HRESULT, IID, NOERROR},
 };
-use log::{debug, LevelFilter};
+use log::{debug, error, LevelFilter};
 use netidx::path::Path;
 use oaidl::{SafeArrayExt, VariantExt, VtNull};
 use once_cell::sync::Lazy;
@@ -61,8 +61,8 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
     v
 }
 
-unsafe fn variant_ok(v: *mut VARIANT) {
-    *(*v).n1.n2_mut().n3.lVal_mut() = 1;
+unsafe fn set_variant_lval(v: *mut VARIANT, l: i32) {
+    *(*v).n1.n2_mut().n3.lVal_mut() = l;
 }
 // Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
 // however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
@@ -215,6 +215,14 @@ impl Variant {
             bail!("not a variant array")
         }
     }
+
+    unsafe fn as_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
+        if self.typ() == wtypes::VT_DISPATCH as u16 {
+            Ok(IRTDUpdateEventWrap::new(*(*self.0).n1.n2().n3.pdispVal()))
+        } else {
+            bail!("not an update event interface")
+        }
+    }
 }
 
 struct Params(*mut DISPPARAMS);
@@ -236,28 +244,43 @@ impl Params {
     }
 }
 
-struct ConnectDataArgs {
-    topic_id: i32,
-    path: Path
+unsafe fn dispatch_server_start(
+    server: &Server, 
+    params: *mut DISPPARAMS, 
+) -> Result<()> {
+    let params = Params::new(params)?;
+    let updates = params.get(0).as_irtd_update_event()?;
+    server.server_start(updates);
+    Ok(())
 }
 
-impl ConnectDataArgs {
-    unsafe fn new(params: *mut DISPPARAMS) -> Result<Self> {
-        let params = Params::new(params)?;
-        if params.len() != 3 {
-            bail!("wrong number of args")
-        }
-        let topic_id = params.get(2).as_long()?;
-        let topics = params.get(1).as_variant_array()?;
-        if topics.len() == 0 {
-            bail!("not enough topics")
-        }
-        let path = topics.get(0).as_path()?;
-        Ok(Self {
-            topic_id,
-            path
-        })
+unsafe fn dispatch_connect_data(
+    server: &Server,
+    params: *mut DISPPARAMS,
+) -> Result<()> {
+    let params = Params::new(params)?;
+    if params.len() != 3 {
+        bail!("wrong number of args")
     }
+    let topic_id = TopicId(params.get(2).as_long()?);
+    let topics = params.get(1).as_variant_array()?;
+    if topics.len() == 0 {
+        bail!("not enough topics")
+    }
+    let path = topics.get(0).as_path()?;
+    Ok(server.connect_data(topic_id, path)?)
+}
+
+unsafe fn dispatch_disconnect_data(
+    server: &Server,
+    params: *mut DISPPARAMS
+) -> Result<()> {
+    let params = Params::new(params)?;
+    if params.len() != 1 {
+        bail!("wrong number of args")
+    }
+    let topic_id = TopicId(params.get(0).as_long()?);
+    Ok(server.disconnect_data(topic_id))
 }
 
 com::class! {
@@ -307,7 +330,7 @@ com::class! {
             NOERROR
         }
 
-        fn invoke(
+        unsafe fn invoke(
             &self,
             id: DISPID,
             iid: *const IID,
@@ -327,30 +350,45 @@ com::class! {
             match id {
                 0 => {
                     debug!("ServerStart");
-                    debug!("{}", unsafe { (*(*params).rgvarg).n1.n2().vt });
-                    let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
-                    debug!("{:?}", updates);
-                    self.server.server_start(IRTDUpdateEventWrap::new(*updates));
-                    unsafe { variant_ok(result); }
-                },
+                    match dispatch_server_start(&self.server, params) {
+                        Ok(()) => set_variant_lval(result, 1),
+                        Err(e) => {
+                            error!("server_start invalid arg {}", e);
+                            set_variant_lval(result, 0)
+                        }
+                    }
+               },
                 1 => {
                     debug!("ServerTerminate");
                     self.server.server_terminate();
-                    unsafe { variant_ok(result); }
+                    set_variant_lval(result, 1);
                 },
                 2 => {
                     debug!("ConnectData");
-                    unsafe { variant_ok(result); }
+                    match dispatch_connect_data(&self.server, params) {
+                        Ok(()) => set_variant_lval(result, 1),
+                        Err(e) => {
+                            error!("connect_data invalid arg {}", e);
+                            set_variant_lval(result, 0)
+                        }
+                    }
                 },
                 3 => {
                     debug!("RefreshData")
                 },
                 4 => {
-                    debug!("DisconnectData")
+                    debug!("DisconnectData");
+                    match dispatch_disconnect_data(&self.server, params) {
+                        Ok(()) => set_variant_lval(result, 1),
+                        Err(e) => {
+                            error!("disconnect_data invalid arg {}", e);
+                            set_variant_lval(result, 0)
+                        }
+                    }
                 },
                 5 => {
                     debug!("Heartbeat");
-                    unsafe { variant_ok(result); }
+                    set_variant_lval(result, 1);
                 },
                 _ => {
                     debug!("unknown method {} called", id)
