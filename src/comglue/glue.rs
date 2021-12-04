@@ -27,6 +27,7 @@ use winapi::{
         minwindef::{UINT, WORD},
         wtypes,
         wtypesbase::LPOLESTR,
+        winerror::ERROR_CREATE_FAILED,
     },
     um::{
         self,
@@ -44,7 +45,7 @@ static LOGGER: Lazy<()> = Lazy::new(|| {
         .expect("couldn't init log")
 });
 
-fn maybe_init_logger() {
+pub fn maybe_init_logger() {
     *LOGGER
 }
 
@@ -58,6 +59,9 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
     v
 }
 
+unsafe fn variant_ok(v: *mut VARIANT) {
+    *(*v).n1.n2_mut().n3.lVal_mut() = 1;
+}
 // Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
 // however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
 // interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
@@ -79,27 +83,32 @@ unsafe impl Send for IRTDUpdateEventWrap {}
 unsafe impl Sync for IRTDUpdateEventWrap {}
 
 impl IRTDUpdateEventWrap {
-    fn get_dispids(&mut self) {
-        let mut update_notify = str_to_wstr("UpdateNotify");
-        let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
-        let mut disconnect = str_to_wstr("Disconnect");
-        let mut names = [
-            update_notify.as_mut_ptr(),
-            heartbeat_interval.as_mut_ptr(),
-            disconnect.as_mut_ptr(),
-        ];
-        let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
-        let res = unsafe {
-            (*self.ptr).GetIDsOfNames(&self.iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
-        };
-        if res != NOERROR {
-            panic!("IRTDUpdateEventWrap: could not get names {}", res);
+    fn get_dispids(&mut self) -> &DispIds {
+        if self.dispids.is_none() {
+            let mut update_notify = str_to_wstr("UpdateNotify");
+            let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
+            let mut disconnect = str_to_wstr("Disconnect");
+            let mut names = [
+                update_notify.as_mut_ptr(),
+                heartbeat_interval.as_mut_ptr(),
+                disconnect.as_mut_ptr(),
+            ];
+            let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
+            debug!("get_dispids: calling GetIDsOfNames");
+            let res = unsafe {
+                (*self.ptr).GetIDsOfNames(&self.iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
+            };
+            debug!("called GetIDsOfNames, result: {}, dispids: {:?}", res, dispids);
+            if res != NOERROR {
+                panic!("IRTDUpdateEventWrap: could not get names {}", res);
+            }
+            self.dispids = Some(DispIds {
+                update_notify_id: dispids[0],
+                heartbeat_interval_id: dispids[1],
+                disconnect_id: dispids[2],
+            })
         }
-        self.dispids = Some(DispIds {
-            update_notify_id: dispids[0],
-            heartbeat_interval_id: dispids[1],
-            disconnect_id: dispids[2],
-        });
+        self.dispids.as_ref().unwrap()
     }
 
     fn new(ptr: *mut um::oaidl::IDispatch) -> Self {
@@ -118,10 +127,7 @@ impl IRTDUpdateEventWrap {
     }
 
     pub(crate) fn update_notify(&mut self) {
-        if self.dispids.is_none() {
-            self.get_dispids();
-        }
-        let update_notify_id = self.dispids.as_ref().unwrap().update_notify_id;
+        let update_notify_id = self.get_dispids().update_notify_id;
         let mut args = [];
         let mut named_args = [];
         let mut params = DISPPARAMS {
@@ -154,7 +160,7 @@ impl IRTDUpdateEventWrap {
 com::class! {
     #[derive(Debug)]
     pub class NetidxRTD: IRTDServer(IDispatch) {
-        server: RefCell<Option<Server>>,
+        server: Server,
     }
 
     impl IDispatch for NetidxRTD {
@@ -217,30 +223,31 @@ com::class! {
             assert!(!params.is_null());
             match id {
                 0 => {
-                    debug!("ServerStart called");
-                    if self.server.borrow().is_none() {
-                        debug!("starting netidx rtd server");
-                        let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
-                        let updates = IRTDUpdateEventWrap::new(*updates);
-                        *self.server.borrow_mut() = Some(Server::new(updates).expect("failed to start server"));
-                        debug!("server started");
-                        unsafe { *(*result).n1.n2_mut().n3.lVal_mut() = 1; }
-                    }
+                    debug!("ServerStart");
+                    let updates = unsafe { (*(*params).rgvarg).n1.n2().n3.pdispVal() };
+                    self.server.server_start(IRTDUpdateEventWrap::new(*updates));
+                    unsafe { variant_ok(result); }
                 },
                 1 => {
-                    debug!("ServerTerminate called")
+                    debug!("ServerTerminate");
+                    self.server.server_terminate();
+                    unsafe { variant_ok(result); }
                 },
                 2 => {
-                    debug!("ConnectData called")
+                    debug!("ConnectData");
+                    assert!(unsafe { (*params).cArgs == 3 });
+                    let topic_id = unsafe { *(*(*params).rgvarg).n1.n2().n3.lVal() };
+                    let topics = unsafe { *(*(*params).rgvarg.offset(1)).n1.n2().n3.parray() };
                 },
                 3 => {
-                    debug!("RefreshData called")
+                    debug!("RefreshData")
                 },
                 4 => {
-                    debug!("DisconnectData called")
+                    debug!("DisconnectData")
                 },
                 5 => {
-                    debug!("Heartbeat called")
+                    debug!("Heartbeat");
+                    unsafe { variant_ok(result); }
                 },
                 _ => {
                     debug!("unknown method {} called", id)
