@@ -24,6 +24,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     sync::mpsc,
+    mem
 };
 use winapi::{
     shared::{
@@ -177,20 +178,18 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
     0
 }
 
-// Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
-// however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
-// interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
 pub(crate) struct IRTDUpdateEventWrap(mpsc::Sender<()>);
 
 impl IRTDUpdateEventWrap {
     unsafe fn new(ptr: *mut um::oaidl::IDispatch) -> Result<Self> {
+        use winapi::um::unknwnbase::IUnknown;
         assert!(!ptr.is_null());
         let (tx, rx) = mpsc::channel();
         let mut args =
             Box::new(IRTDUpdateEventThreadArgs { stream: ptr::null_mut(), rx });
         let res = CoMarshalInterThreadInterfaceInStream(
             &IDISPATCH_GUID,
-            &mut **ptr,
+            mem::transmute::<&IUnknown, *mut IUnknown>(&*ptr),
             &mut args.stream,
         );
         if FAILED(res) {
@@ -272,7 +271,7 @@ impl Variant {
 
     unsafe fn as_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
         if self.typ() == wtypes::VT_DISPATCH as u16 {
-            Ok(IRTDUpdateEventWrap::new(*(*self.0).n1.n2().n3.pdispVal()))
+            Ok(IRTDUpdateEventWrap::new(*(*self.0).n1.n2().n3.pdispVal())?)
         } else {
             bail!("not an update event interface")
         }
