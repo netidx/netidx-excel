@@ -6,6 +6,7 @@ use crate::{
     server::{Server, TopicId},
 };
 use anyhow::{bail, Result};
+use arcstr::ArcStr;
 use com::{
     interfaces::IUnknown,
     sys::{HRESULT, IID, NOERROR},
@@ -16,25 +17,32 @@ use oaidl::{SafeArrayExt, VariantExt, VtNull};
 use once_cell::sync::Lazy;
 use simplelog;
 use std::{
-    ffi::OsString,
+    boxed::Box,
+    ffi::{c_void, OsString},
     fs::File,
     marker::{Send, Sync},
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
+    sync::mpsc,
 };
-use arcstr::ArcStr;
 use winapi::{
     shared::{
         guiddef::GUID,
         minwindef::{UINT, WORD},
+        winerror::{ERROR_CREATE_FAILED, FAILED, SUCCEEDED},
         wtypes,
         wtypesbase::LPOLESTR,
-        winerror::ERROR_CREATE_FAILED,
     },
     um::{
         self,
+        combaseapi::{
+            CoGetInterfaceAndReleaseStream, CoInitializeEx,
+            CoMarshalInterThreadInterfaceInStream, CoUninitialize,
+        },
         oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT},
-        oleauto::{DISPATCH_METHOD, SafeArrayGetLBound, SafeArrayGetUBound},
+        objidlbase::IStream,
+        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD},
+        processthreadsapi::CreateThread,
         winbase::lstrlenW,
         winnt::LCID,
     },
@@ -64,72 +72,37 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
 unsafe fn set_variant_lval(v: *mut VARIANT, l: i32) {
     *(*v).n1.n2_mut().n3.lVal_mut() = l;
 }
-// Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
-// however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
-// interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
 
-struct DispIds {
-    update_notify_id: DISPID,
-    heartbeat_interval_id: DISPID,
-    disconnect_id: DISPID,
+// IRTDUpdateEvent is single apartment threaded, and that means we need to ask COM
+// to make a proxy for us in order to run it in another thread. Since we MUST run in
+// another thread to be async, this is mandatory. We have to marshal the interface when
+// we receive it, and then unmarshal it in the update thread, which is then able to
+// call into it.
+struct IRTDUpdateEventThreadArgs {
+    stream: *mut IStream,
+    rx: mpsc::Receiver<()>,
 }
 
-pub(crate) struct IRTDUpdateEventWrap {
-    ptr: *mut um::oaidl::IDispatch,
-    iid: GUID,
-    dispids: Option<DispIds>,
-}
+static IDISPATCH_GUID: GUID = GUID {
+    Data1: IID_IDISPATCH.data1,
+    Data2: IID_IDISPATCH.data2,
+    Data3: IID_IDISPATCH.data3,
+    Data4: IID_IDISPATCH.data4,
+};
 
-// CR estokes: verify that this is ok. Somehow ...
-unsafe impl Send for IRTDUpdateEventWrap {}
-unsafe impl Sync for IRTDUpdateEventWrap {}
+static IRTDUPDATE_EVENT_GUID: GUID = GUID {
+    Data1: IID_IRTDUPDATE_EVENT.data1,
+    Data2: IID_IRTDUPDATE_EVENT.data2,
+    Data3: IID_IRTDUPDATE_EVENT.data3,
+    Data4: IID_IRTDUPDATE_EVENT.data4,
+};
 
-impl IRTDUpdateEventWrap {
-    fn get_dispids(&mut self) -> &DispIds {
-        if self.dispids.is_none() {
-            let mut update_notify = str_to_wstr("UpdateNotify");
-            let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
-            let mut disconnect = str_to_wstr("Disconnect");
-            let mut names = [
-                update_notify.as_mut_ptr(),
-                heartbeat_interval.as_mut_ptr(),
-                disconnect.as_mut_ptr(),
-            ];
-            let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
-            debug!("get_dispids: calling GetIDsOfNames");
-            let res = unsafe {
-                (*self.ptr).GetIDsOfNames(&self.iid, names.as_mut_ptr(), 3, 0, dispids.as_mut_ptr())
-            };
-            debug!("called GetIDsOfNames, result: {}, dispids: {:?}", res, dispids);
-            if res != NOERROR {
-                panic!("IRTDUpdateEventWrap: could not get names {}", res);
-            }
-            self.dispids = Some(DispIds {
-                update_notify_id: dispids[0],
-                heartbeat_interval_id: dispids[1],
-                disconnect_id: dispids[2],
-            })
-        }
-        self.dispids.as_ref().unwrap()
-    }
-
-    fn new(ptr: *mut um::oaidl::IDispatch) -> Self {
-        assert!(!ptr.is_null());
-        let iid = GUID {
-            Data1: IID_IRTDUPDATE_EVENT.data1,
-            Data2: IID_IRTDUPDATE_EVENT.data2,
-            Data3: IID_IRTDUPDATE_EVENT.data3,
-            Data4: IID_IRTDUPDATE_EVENT.data4,
-        };
-        IRTDUpdateEventWrap {
-            ptr,
-            iid,
-            dispids: None,
-        }
-    }
-
-    pub(crate) fn update_notify(&mut self) {
-        let update_notify_id = self.get_dispids().update_notify_id;
+unsafe fn irtd_update_event_loop(
+    update_notify: DISPID,
+    rx: mpsc::Receiver<()>,
+    idp: *mut um::oaidl::IDispatch,
+) {
+    while let Ok(()) = rx.recv() {
         let mut args = [];
         let mut named_args = [];
         let mut params = DISPPARAMS {
@@ -141,21 +114,102 @@ impl IRTDUpdateEventWrap {
         let mut _result =
             VariantExt::into_variant(VtNull).expect("couldn't create result variant");
         let mut _arg_err = 0;
-        let res = unsafe {
-            (*self.ptr).Invoke(
-                update_notify_id,
-                &self.iid,
+        let hr = (*idp).Invoke(
+            update_notify,
+            &IRTDUPDATE_EVENT_GUID,
+            0,
+            DISPATCH_METHOD,
+            &mut params,
+            _result.as_ptr(),
+            ptr::null_mut(),
+            &mut _arg_err,
+        );
+        if FAILED(hr) {
+            error!("IRTDUpdateEvent: update_notify failed {}", hr);
+        }
+    }
+}
+
+unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
+    maybe_init_logger();
+    let args = Box::from_raw(ptr.cast::<IRTDUpdateEventThreadArgs>());
+    let hr = CoInitializeEx(ptr::null_mut(), 0);
+    if FAILED(hr) {
+        error!("update_event_thread: failed to initialize COM {}", hr)
+    }
+    let mut idp: *mut um::oaidl::IDispatch = ptr::null_mut();
+    let hr = CoGetInterfaceAndReleaseStream(
+        args.stream,
+        &IDISPATCH_GUID,
+        ((&mut idp) as *mut *mut um::oaidl::IDispatch).cast::<*mut c_void>(),
+    );
+    if FAILED(hr) {
+        error!("update_event_thread: failed to unmarshal the IDispatch interface {}", hr);
+    }
+    if !idp.is_null() {
+        let mut update_notify = str_to_wstr("UpdateNotify");
+        let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
+        let mut disconnect = str_to_wstr("Disconnect");
+        let mut names = [
+            update_notify.as_mut_ptr(),
+            heartbeat_interval.as_mut_ptr(),
+            disconnect.as_mut_ptr(),
+        ];
+        let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
+        debug!("get_dispids: calling GetIDsOfNames");
+        let hr = unsafe {
+            (*idp).GetIDsOfNames(
+                &IRTDUPDATE_EVENT_GUID,
+                names.as_mut_ptr(),
+                3,
                 0,
-                DISPATCH_METHOD,
-                &mut params,
-                _result.as_ptr(),
-                ptr::null_mut(),
-                &mut _arg_err,
+                dispids.as_mut_ptr(),
             )
         };
-        if res != NOERROR {
-            panic!("IRTDUpdateEvent: update_notify failed {}", res);
+        debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispids);
+        if FAILED(hr) {
+            error!("update_event_thread: could not get names {}", hr);
         }
+        debug!("update_event_thread, init done, calling event loop");
+        irtd_update_event_loop(dispids[0], args.rx, idp);
+    }
+    CoUninitialize();
+    0
+}
+
+// Excel hands us an IRTDUpdateEvent class that we need to use to tell it that we have data,
+// however it doesn't give us an IRTDUpdateEvent COM interface, it gives us an IDispatch COM
+// interface, so we need to use that to call the methods of IRTDUpdateEvent through IDispatch.
+pub(crate) struct IRTDUpdateEventWrap(mpsc::Sender<()>);
+
+impl IRTDUpdateEventWrap {
+    unsafe fn new(ptr: *mut um::oaidl::IDispatch) -> Result<Self> {
+        assert!(!ptr.is_null());
+        let (tx, rx) = mpsc::channel();
+        let mut args =
+            Box::new(IRTDUpdateEventThreadArgs { stream: ptr::null_mut(), rx });
+        let res = CoMarshalInterThreadInterfaceInStream(
+            &IDISPATCH_GUID,
+            &mut **ptr,
+            &mut args.stream,
+        );
+        if FAILED(res) {
+            bail!("couldn't marshal interface {}", res);
+        }
+        let mut threadid = 0u32;
+        CreateThread(
+            ptr::null_mut(),
+            0,
+            Some(irtd_update_event_thread),
+            Box::into_raw(args).cast::<c_void>(),
+            0,
+            &mut threadid,
+        );
+        Ok(IRTDUpdateEventWrap(tx))
+    }
+
+    pub(crate) fn update_notify(&mut self) {
+        let _ = self.0.send(());
     }
 }
 
@@ -244,20 +298,14 @@ impl Params {
     }
 }
 
-unsafe fn dispatch_server_start(
-    server: &Server, 
-    params: *mut DISPPARAMS, 
-) -> Result<()> {
+unsafe fn dispatch_server_start(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
     let params = Params::new(params)?;
     let updates = params.get(0).as_irtd_update_event()?;
     server.server_start(updates);
     Ok(())
 }
 
-unsafe fn dispatch_connect_data(
-    server: &Server,
-    params: *mut DISPPARAMS,
-) -> Result<()> {
+unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
     let params = Params::new(params)?;
     if params.len() != 3 {
         bail!("wrong number of args")
@@ -273,7 +321,7 @@ unsafe fn dispatch_connect_data(
 
 unsafe fn dispatch_disconnect_data(
     server: &Server,
-    params: *mut DISPPARAMS
+    params: *mut DISPPARAMS,
 ) -> Result<()> {
     let params = Params::new(params)?;
     if params.len() != 1 {
