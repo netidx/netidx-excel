@@ -21,14 +21,14 @@ use std::{
     ffi::{c_void, OsString},
     fs::File,
     marker::{Send, Sync},
+    mem,
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     sync::mpsc,
-    mem
 };
 use winapi::{
     shared::{
-        guiddef::GUID,
+        guiddef::{GUID, IID_NULL},
         minwindef::{UINT, WORD},
         winerror::{ERROR_CREATE_FAILED, FAILED, SUCCEEDED},
         wtypes,
@@ -91,13 +91,6 @@ static IDISPATCH_GUID: GUID = GUID {
     Data4: IID_IDISPATCH.data4,
 };
 
-static IRTDUPDATE_EVENT_GUID: GUID = GUID {
-    Data1: IID_IRTDUPDATE_EVENT.data1,
-    Data2: IID_IRTDUPDATE_EVENT.data2,
-    Data3: IID_IRTDUPDATE_EVENT.data3,
-    Data4: IID_IRTDUPDATE_EVENT.data4,
-};
-
 unsafe fn irtd_update_event_loop(
     update_notify: DISPID,
     rx: mpsc::Receiver<()>,
@@ -117,7 +110,7 @@ unsafe fn irtd_update_event_loop(
         let mut _arg_err = 0;
         let hr = (*idp).Invoke(
             update_notify,
-            &IRTDUPDATE_EVENT_GUID,
+            &IID_NULL,
             0,
             DISPATCH_METHOD,
             &mut params,
@@ -149,30 +142,21 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
     }
     if !idp.is_null() {
         let mut update_notify = str_to_wstr("UpdateNotify");
-        let mut heartbeat_interval = str_to_wstr("HeartbeatInterval");
-        let mut disconnect = str_to_wstr("Disconnect");
-        let mut names = [
-            update_notify.as_mut_ptr(),
-            heartbeat_interval.as_mut_ptr(),
-            disconnect.as_mut_ptr(),
-        ];
-        let mut dispids: [DISPID; 3] = [0x0, 0x0, 0x0];
+        let mut dispid = 0x0;
         debug!("get_dispids: calling GetIDsOfNames");
-        let hr = unsafe {
-            (*idp).GetIDsOfNames(
-                &IRTDUPDATE_EVENT_GUID,
-                names.as_mut_ptr(),
-                3,
-                0,
-                dispids.as_mut_ptr(),
-            )
-        };
-        debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispids);
+        let hr = (*idp).GetIDsOfNames(
+            &IID_NULL,
+            &mut update_notify.as_mut_ptr(),
+            1,
+            1000,
+            &mut dispid,
+        );
+        debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispid);
         if FAILED(hr) {
             error!("update_event_thread: could not get names {}", hr);
         }
         debug!("update_event_thread, init done, calling event loop");
-        irtd_update_event_loop(dispids[0], args.rx, idp);
+        irtd_update_event_loop(dispid, args.rx, idp);
     }
     CoUninitialize();
     0
