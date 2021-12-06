@@ -1,10 +1,8 @@
 use crate::{
-    comglue::interface::{
-        IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH,
-    },
+    comglue::interface::{IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH},
     server::{Server, TopicId},
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, anyhow, Result};
 use arcstr::ArcStr;
 use com::{
     interfaces::IUnknown,
@@ -23,26 +21,21 @@ use std::{
     ptr,
     sync::mpsc,
 };
-use winapi::{
-    shared::{
-        guiddef::{GUID, IID_NULL},
-        minwindef::{UINT, WORD},
-        winerror::FAILED,
-        wtypes,
-        wtypesbase::LPOLESTR,
-    },
-    um::{
-        self,
-        combaseapi::{
-            CoGetInterfaceAndReleaseStream, CoInitializeEx,
-            CoMarshalInterThreadInterfaceInStream, CoUninitialize,
+use windows::{
+    core::GUID,
+    Win32::{
+        Foundation::{PWSTR, SysAllocStringLen},
+        System::{
+            Com::{
+                self, CoInitialize, CoUninitialize, IStream, ITypeInfo,
+                Marshal::CoMarshalInterThreadInterfaceInStream,
+                StructuredStorage::CoGetInterfaceAndReleaseStream, DISPPARAMS, EXCEPINFO,
+                SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0,
+            },
+            Globalization::lstrlenW,
+            Ole::{self, SafeArrayCreate, SafeArrayPutElement, SafeArrayGetLBound, SafeArrayGetUBound, VariantInit, VariantClear, SafeArrayGetElement},
+            Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
-        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT, VARIANT_n3},
-        objidlbase::IStream,
-        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD, SafeArrayCreateVector, VariantInit, SysAllocStringLen},
-        processthreadsapi::CreateThread,
-        winbase::lstrlenW,
-        winnt::LCID,
     },
 };
 
@@ -73,21 +66,21 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
 // we receive it, and then unmarshal it in the update thread, which is then able to
 // call into it.
 struct IRTDUpdateEventThreadArgs {
-    stream: *mut IStream,
+    stream: IStream,
     rx: mpsc::Receiver<()>,
 }
 
 static IDISPATCH_GUID: GUID = GUID {
-    Data1: IID_IDISPATCH.data1,
-    Data2: IID_IDISPATCH.data2,
-    Data3: IID_IDISPATCH.data3,
-    Data4: IID_IDISPATCH.data4,
+    data1: IID_IDISPATCH.data1,
+    data2: IID_IDISPATCH.data2,
+    data3: IID_IDISPATCH.data3,
+    data4: IID_IDISPATCH.data4,
 };
 
 unsafe fn irtd_update_event_loop(
-    update_notify: DISPID,
+    update_notify: i32,
     rx: mpsc::Receiver<()>,
-    idp: *mut um::oaidl::IDispatch,
+    idp: Com::IDispatch,
 ) {
     while let Ok(()) = rx.recv() {
         while let Ok(()) = rx.try_recv() {}
@@ -102,18 +95,18 @@ unsafe fn irtd_update_event_loop(
         let mut result_: VARIANT = mem::zeroed();
         Variant(&mut result_).set_null();
         let mut _arg_err = 0;
-        let hr = (*idp).Invoke(
+        let hr = idp.Invoke(
             update_notify,
-            &IID_NULL,
+            &GUID::zeroed(),
             0,
-            DISPATCH_METHOD,
+            Ole::DISPATCH_METHOD as u16,
             &mut params,
             &mut result_,
             ptr::null_mut(),
             &mut _arg_err,
         );
-        if FAILED(hr) {
-            error!("IRTDUpdateEvent: update_notify failed {}", hr);
+        if let Err(e) = hr {
+            error!("IRTDUpdateEvent: update_notify failed {}", e);
         }
     }
 }
@@ -121,37 +114,40 @@ unsafe fn irtd_update_event_loop(
 unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
     maybe_init_logger();
     let args = Box::from_raw(ptr.cast::<IRTDUpdateEventThreadArgs>());
-    let hr = CoInitializeEx(ptr::null_mut(), 0);
-    if FAILED(hr) {
-        error!("update_event_thread: failed to initialize COM {}", hr)
-    }
-    let mut idp: *mut um::oaidl::IDispatch = ptr::null_mut();
-    let hr = CoGetInterfaceAndReleaseStream(
-        args.stream,
-        &IDISPATCH_GUID,
-        ((&mut idp) as *mut *mut um::oaidl::IDispatch).cast::<*mut c_void>(),
-    );
-    if FAILED(hr) {
-        error!("update_event_thread: failed to unmarshal the IDispatch interface {}", hr);
-    }
-    if !idp.is_null() {
-        let mut update_notify = str_to_wstr("UpdateNotify");
-        let mut dispid = 0x0;
-        debug!("get_dispids: calling GetIDsOfNames");
-        let hr = (*idp).GetIDsOfNames(
-            &IID_NULL,
-            &mut update_notify.as_mut_ptr(),
-            1,
-            1000,
-            &mut dispid,
-        );
-        debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispid);
-        if FAILED(hr) {
-            error!("update_event_thread: could not get names {}", hr);
+    match CoInitialize(ptr::null_mut()) {
+        Ok(()) => (),
+        Err(e) => {
+            error!("update_event_thread: failed to initialize COM {}", e);
+            return 0;
         }
-        debug!("update_event_thread, init done, calling event loop");
-        irtd_update_event_loop(dispid, args.rx, idp);
     }
+    let idp: Com::IDispatch = match CoGetInterfaceAndReleaseStream(&args.stream) {
+        Ok(i) => i,
+        Err(e) => {
+            error!(
+                "update_event_thread: failed to unmarshal the IDispatch interface {}",
+                e
+            );
+            CoUninitialize();
+            return 0;
+        }
+    };
+    let mut update_notify = str_to_wstr("UpdateNotify");
+    let mut dispid = 0x0;
+    debug!("get_dispids: calling GetIDsOfNames");
+    let hr = idp.GetIDsOfNames(
+        &GUID::zeroed(),
+        &PWSTR(update_notify.as_mut_ptr()),
+        1,
+        1000,
+        &mut dispid,
+    );
+    debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispid);
+    if let Err(e) = hr {
+        error!("update_event_thread: could not get names {}", e);
+    }
+    debug!("update_event_thread, init done, calling event loop");
+    irtd_update_event_loop(dispid, args.rx, idp);
     CoUninitialize();
     0
 }
@@ -159,27 +155,17 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
 pub(crate) struct IRTDUpdateEventWrap(mpsc::Sender<()>);
 
 impl IRTDUpdateEventWrap {
-    unsafe fn new(ptr: *mut um::oaidl::IDispatch) -> Result<Self> {
-        use winapi::um::unknwnbase::IUnknown;
-        assert!(!ptr.is_null());
+    unsafe fn new(disp: *mut Com::IDispatch) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let mut args =
-            Box::new(IRTDUpdateEventThreadArgs { stream: ptr::null_mut(), rx });
-        let res = CoMarshalInterThreadInterfaceInStream(
-            &IDISPATCH_GUID,
-            mem::transmute::<&IUnknown, *mut IUnknown>(&*ptr),
-            &mut args.stream,
-        );
-        if FAILED(res) {
-            bail!("couldn't marshal interface {}", res);
-        }
+        let stream = CoMarshalInterThreadInterfaceInStream(&GUID::zeroed(), *disp).map_err(|e| anyhow!(e.to_string()))?;
+        let args = Box::new(IRTDUpdateEventThreadArgs { stream, rx });
         let mut threadid = 0u32;
         CreateThread(
             ptr::null_mut(),
             0,
             Some(irtd_update_event_thread),
             Box::into_raw(args).cast::<c_void>(),
-            0,
+            THREAD_CREATION_FLAGS::default(),
             &mut threadid,
         );
         Ok(IRTDUpdateEventWrap(tx))
@@ -190,28 +176,40 @@ impl IRTDUpdateEventWrap {
     }
 }
 
-struct VariantArray(*mut SAFEARRAY);
+struct VariantVector(*mut SAFEARRAY);
 
-impl VariantArray {
+impl VariantVector {
     fn new(p: *mut SAFEARRAY) -> Self {
-        VariantArray(p)
-    }
-
-    unsafe fn alloc(len: usize) -> Self {
-        let p = SafeArrayCreateVector(wtypes::VT_VARIANT as u16, 0, len as u32);
-        Self::new(p)
+        VariantVector(p)
     }
 
     unsafe fn len(&self) -> usize {
-        let mut lbound = 0;
-        let mut ubound = 0;
-        SafeArrayGetLBound(self.0, 1, &mut lbound);
-        SafeArrayGetUBound(self.0, 1, &mut ubound);
+        let mut lbound = SafeArrayGetLBound(self.0, 1).unwrap();
+        let mut ubound = SafeArrayGetUBound(self.0, 1).unwrap();
         (1 + ubound - lbound) as usize
     }
 
     unsafe fn get(&self, i: isize) -> Variant {
         Variant::new((*self.0).pvData.cast::<VARIANT>().offset(i))
+    }
+}
+
+struct VariantVector2D(*mut SAFEARRAY);
+
+impl VariantVector2D {
+    unsafe fn alloc(rows: usize, cols: usize) -> VariantVector2D {
+        let dims = [
+            SAFEARRAYBOUND { cElements: cols as u32, lLbound: 0 },
+            SAFEARRAYBOUND { cElements: rows as u32, lLbound: 0 }
+        ];
+        VariantVector2D(SafeArrayCreate(Ole::VT_VARIANT.0 as u16, 2, dims.as_ptr()))
+    }
+
+    unsafe fn put(&self, col: usize, row: usize, val: Variant) {
+        let idx = [col as i32, row as i32];
+        if let Err(e) = SafeArrayPutElement(self.0, idx.as_ptr(), val.0 as *mut c_void) {
+            error!("failed to put element in VariantVector2D {}", e)
+        }
     }
 }
 
@@ -222,124 +220,129 @@ impl Variant {
         Variant(p)
     }
 
+    unsafe fn clear(&self) {
+        VariantClear(self.0);
+    }
+
     unsafe fn typ(&self) -> u16 {
-        (*self.0).n1.n2().vt
+        (*self.0).Anonymous.Anonymous.vt
     }
 
-    unsafe fn typ_mut(&mut self) -> &mut u16 {
-        &mut (*self.0).n1.n2_mut().vt
+    unsafe fn set_typ(&mut self, typ: Ole::VARENUM) {
+        (*(*self.0).Anonymous.Anonymous).vt = typ.0 as u16;
     }
 
-    unsafe fn val(&self) -> &VARIANT_n3 {
-        &(*self.0).n1.n2().n3
+    unsafe fn val(&self) -> &VARIANT_0_0_0 {
+        &(*self.0).Anonymous.Anonymous.Anonymous
     }
 
-    unsafe fn val_mut(&mut self) -> &mut VARIANT_n3 {
-        &mut (*self.0).n1.n2_mut().n3
+    unsafe fn val_mut(&mut self) -> &mut VARIANT_0_0_0 {
+        &mut (*(*self.0).Anonymous.Anonymous).Anonymous
     }
 
     unsafe fn set_bool(&mut self, v: bool) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_BOOL as u16;
-        *self.val_mut().boolVal_mut() = if v { wtypes::VARIANT_TRUE } else { wtypes::VARIANT_FALSE };
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_BOOL);
+        self.val_mut().boolVal = if v { -1 } else { 0 };
     }
 
     unsafe fn set_null(&mut self) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_NULL as u16;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_NULL);
     }
 
     unsafe fn set_error(&mut self) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_ERROR as u16;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_ERROR);
     }
 
     unsafe fn set_i32(&mut self, v: i32) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_I4 as u16;
-        *self.val_mut().lVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_I4);
+        self.val_mut().lVal = v;
     }
 
     unsafe fn set_u32(&mut self, v: u32) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_UI4 as u16;
-        *self.val_mut().ulVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_UI4);
+        self.val_mut().ulVal = v;
     }
 
     unsafe fn set_i64(&mut self, v: i64) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_I8 as u16;
-        *self.val_mut().llVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_I8);
+        self.val_mut().llVal = v;
     }
 
     unsafe fn set_u64(&mut self, v: u64) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_UI8 as u16;
-        *self.val_mut().ullVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_UI8);
+        self.val_mut().ullVal = v;
     }
 
     unsafe fn set_f32(&mut self, v: f32) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_R4 as u16;
-        *self.val_mut().fltVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_R4);
+        self.val_mut().fltVal = v;
     }
 
     unsafe fn set_f64(&mut self, v: f64) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_R8 as u16;
-        *self.val_mut().dblVal_mut() = v;
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_R8);
+        self.val_mut().dblVal = v;
     }
 
     unsafe fn set_string(&mut self, v: &str) {
-        VariantInit(self.0);
-        *self.typ_mut() = wtypes::VT_BSTR as u16;
-        let s = str_to_wstr(v);
-        *self.val_mut().bstrVal_mut() = SysAllocStringLen(s.as_ptr(), s.len() as u32);
+        VariantClear(self.0);
+        self.set_typ(Ole::VT_BSTR);
+        let mut s = str_to_wstr(v);
+        let bs = SysAllocStringLen(PWSTR(s.as_mut_ptr()), s.len() as u32);
+        self.val_mut().bstrVal = mem::ManuallyDrop::new(bs);
     }
 
-    unsafe fn set_variant_array(&mut self, v: VariantArray) {
+    unsafe fn set_safearray(&mut self, v: *mut SAFEARRAY) {
         VariantInit(self.0);
-        *self.typ_mut() = (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16;
-        *self.val_mut().parray_mut() = v.0;
+        self.set_typ(Ole::VARENUM(Ole::VT_ARRAY.0 | Ole::VT_VARIANT.0));
+        self.val_mut().parray = v;
     }
 
     unsafe fn get_i32(&self) -> Result<i32> {
-        if self.typ() == wtypes::VT_I4 as u16 {
-            Ok(*self.val().lVal())
+        if self.typ() == Ole::VT_I4.0 as u16 {
+            Ok(self.val().lVal)
         } else {
             bail!("not a long value")
         }
     }
 
     unsafe fn get_byref_i32(&self) -> Result<*mut i32> {
-        if self.typ() == (wtypes::VT_I4 | wtypes::VT_BYREF) as u16 {
-            Ok(*self.val().plVal())
+        if self.typ() == (Ole::VT_I4.0 | Ole::VT_BYREF.0) as u16 {
+            Ok(self.val().plVal)
         } else {
             bail!("not a byref long value")
         }
     }
 
     unsafe fn get_path(&self) -> Result<Path> {
-        if self.typ() == wtypes::VT_BSTR as u16 {
-            let path = *self.val().bstrVal();
-            let path = string_from_wstr(path);
+        if self.typ() == Ole::VT_BSTR.0 as u16 {
+            let path = self.val().bstrVal;
+            let path = string_from_wstr(path.0);
             Ok(Path::from(ArcStr::from(&*path.to_string_lossy())))
         } else {
             bail!("not a string value")
         }
     }
 
-    unsafe fn get_variant_array(&self) -> Result<VariantArray> {
-        if self.typ() == (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16 {
-            Ok(VariantArray::new(*self.val().parray()))
+    unsafe fn get_variant_vector(&self) -> Result<VariantVector> {
+        if self.typ() == (Ole::VT_ARRAY.0 | Ole::VT_VARIANT.0) as u16 {
+            Ok(VariantVector::new(self.val().parray))
         } else {
             bail!("not a variant array")
         }
     }
 
     unsafe fn get_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
-        if self.typ() == wtypes::VT_DISPATCH as u16 {
-            Ok(IRTDUpdateEventWrap::new(*self.val().pdispVal())?)
+        if self.typ() == Ole::VT_DISPATCH.0 as u16 {
+            Ok(IRTDUpdateEventWrap::new(self.val().pdispVal.cast::<Com::IDispatch>())?)
         } else {
             bail!("not an update event interface")
         }
@@ -378,7 +381,7 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
         bail!("wrong number of args")
     }
     let topic_id = TopicId(params.get(2).get_i32()?);
-    let topics = params.get(1).get_variant_array()?;
+    let topics = params.get(1).get_variant_vector()?;
     if topics.len() == 0 {
         bail!("not enough topics")
     }
@@ -386,7 +389,11 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     Ok(server.connect_data(topic_id, path)?)
 }
 
-unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result: &mut Variant) -> Result<()> {
+unsafe fn dispatch_refresh_data(
+    server: &Server,
+    params: *mut DISPPARAMS,
+    result: &mut Variant,
+) -> Result<()> {
     use netidx::subscriber::{Event, Value};
     let params = Params::new(params)?;
     if params.len() != 1 {
@@ -396,34 +403,40 @@ unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result
     let mut updates = server.refresh_data();
     let len = updates.len();
     *ntopics.get_byref_i32()? = len as i32;
-    let array = VariantArray::alloc(len * 2);
+    let array = VariantVector2D::alloc(len, 2);
+    let mut var_: VARIANT = mem::zeroed();
+    VariantInit(&mut var_);
+    let mut var = Variant::new(&mut var_);
     for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
-        let i = i as isize;
-        array.get(i).set_i32(tid);
-        let i = i + 1;
+        var.set_i32(tid);
+        array.put(0, i, var);
         match e {
-            Event::Unsubscribed => array.get(i).set_string("#SUB"),
+            Event::Unsubscribed => var.set_string("#SUB"),
             Event::Update(v) => match v {
-                Value::I32(v) | Value::Z32(v) => array.get(i).set_i32(v),
-                Value::U32(v) | Value::V32(v) => array.get(i).set_u32(v),
-                Value::I64(v) | Value::Z64(v) => array.get(i).set_i64(v),
-                Value::U64(v) | Value::V64(v) => array.get(i).set_u64(v),
-                Value::F32(v) => array.get(i).set_f32(v),
-                Value::F64(v) => array.get(i).set_f64(v),
-                Value::True => array.get(i).set_bool(true),
-                Value::False => array.get(i).set_bool(false),
-                Value::String(s) => array.get(i).set_string(&*s),
-                Value::Bytes(_) => array.get(i).set_string("#BIN"),
-                Value::Null => array.get(i).set_null(),
-                Value::Ok => array.get(i).set_string("OK"),
-                Value::Error(e) => array.get(i).set_string(&format!("#ERR {}", &*e)),
-                Value::Array(_) => array.get(i).set_string("#ARRAY"), // CR estokes: implement this?
-                Value::DateTime(d) => array.get(i).set_string(&d.to_string()),
-                Value::Duration(d) => array.get(i).set_string(&format!("{}s", d.as_secs_f64()))
-            }
+                Value::I32(v) | Value::Z32(v) => var.set_i32(v),
+                Value::U32(v) | Value::V32(v) => var.set_u32(v),
+                Value::I64(v) | Value::Z64(v) => var.set_i64(v),
+                Value::U64(v) | Value::V64(v) => var.set_u64(v),
+                Value::F32(v) => var.set_f32(v),
+                Value::F64(v) => var.set_f64(v),
+                Value::True => var.set_bool(true),
+                Value::False => var.set_bool(false),
+                Value::String(s) => var.set_string(&*s),
+                Value::Bytes(_) => var.set_string("#BIN"),
+                Value::Null => var.set_null(),
+                Value::Ok => var.set_string("OK"),
+                Value::Error(e) => var.set_string(&format!("#ERR {}", &*e)),
+                Value::Array(_) => var.set_string("#ARRAY"), // CR estokes: implement this?
+                Value::DateTime(d) => var.set_string(&d.to_string()),
+                Value::Duration(d) => {
+                    var.set_string(&format!("{}s", d.as_secs_f64()))
+                }
+            },
         }
+        array.put(1, i, var);
     }
-    result.set_variant_array(array);
+    var.clear();
+    result.set_safearray(array.0);
     Ok(())
 }
 
@@ -446,7 +459,7 @@ com::class! {
     }
 
     impl IDispatch for NetidxRTD {
-        fn get_type_info_count(&self, info: *mut UINT) -> HRESULT {
+        fn get_type_info_count(&self, info: *mut u32) -> HRESULT {
             maybe_init_logger();
             debug!("get_type_info_count(info: {})", unsafe { *info });
             if !info.is_null() {
@@ -455,15 +468,15 @@ com::class! {
             NOERROR
         }
 
-        fn get_type_info(&self, _lcid: LCID, _type_info: *mut *mut ITypeInfo) -> HRESULT { NOERROR }
+        fn get_type_info(&self, _lcid: u32, _type_info: *mut *mut ITypeInfo) -> HRESULT { NOERROR }
 
         pub fn get_ids_of_names(
             &self,
             riid: *const IID,
-            names: *const LPOLESTR,
-            names_len: UINT,
-            lcid: LCID,
-            ids: *mut DISPID
+            names: *const *mut u16,
+            names_len: u32,
+            lcid: u32,
+            ids: *mut u32
         ) -> HRESULT {
             maybe_init_logger();
             debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
@@ -488,14 +501,14 @@ com::class! {
 
         unsafe fn invoke(
             &self,
-            id: DISPID,
+            id: u32,
             iid: *const IID,
-            lcid: LCID,
-            flags: WORD,
+            lcid: u32,
+            flags: u16,
             params: *mut DISPPARAMS,
             result: *mut VARIANT,
             exception: *mut EXCEPINFO,
-            arg_error: *mut UINT
+            arg_error: *mut u32
         ) -> HRESULT {
             maybe_init_logger();
             debug!(
