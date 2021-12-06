@@ -40,9 +40,9 @@ use winapi::{
             CoGetInterfaceAndReleaseStream, CoInitializeEx,
             CoMarshalInterThreadInterfaceInStream, CoUninitialize,
         },
-        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT},
+        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_n3},
         objidlbase::IStream,
-        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD},
+        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD, SafeArrayCreateVector, VariantInit},
         processthreadsapi::CreateThread,
         winbase::lstrlenW,
         winnt::LCID,
@@ -227,17 +227,73 @@ impl Variant {
         (*self.0).n1.n2().vt
     }
 
-    unsafe fn as_long(&self) -> Result<i32> {
+    unsafe fn typ_mut(&self) -> &mut u16 {
+        &mut (*self.0).n1.n2().vt
+    }
+
+    unsafe fn val(&self) -> &VARIANT_n3 {
+        &(*self.0).n1.n2().n3
+    }
+
+    unsafe fn val_mut(&self) -> &mut VARIANT_n3 {
+        &mut (*self.0).n1.n2().n3
+    }
+
+    unsafe fn set_i32(&self, v: i32) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_I4 as u16;
+        *self.val_mut().lVal_mut() = v;
+    }
+
+    unsafe fn set_u32(&self, v: u32) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_UI4 as u16;
+        *self.val_mut().ulVal_mut() = v;
+    }
+
+    unsafe fn set_i64(&self, v: i64) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_I8 as u16;
+        *self.val_mut().llVal_mut() = v;
+    }
+
+    unsafe fn set_u64(&self, v: u64) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_UI8 as u16;
+        *self.val_mut().ullVal_mut() = v;
+    }
+
+    unsafe fn set_f32(&self, v: f32) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_R4 as u16;
+        *self.val_mut().fltVal_mut() = v;
+    }
+
+    unsafe fn set_f64(&self, v: f64) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_R8 as u16;
+        *self.val_mut().dblVal_mut() = v;
+    }
+
+    unsafe fn as_i32(&self) -> Result<i32> {
         if self.typ() == wtypes::VT_I4 as u16 {
-            Ok(*(*self.0).n1.n2().n3.lVal())
+            Ok(*self.val().lVal())
         } else {
             bail!("not a long value")
         }
     }
 
+    unsafe fn as_byref_i32(&self) -> Result<*mut i32> {
+        if self.typ() == (wtypes::VT_I4 | wtypes::VT_BYREF) as u16 {
+            Ok(*self.val().plVal())
+        } else {
+            bail!("not a byref long value")
+        }
+    }
+
     unsafe fn as_path(&self) -> Result<Path> {
         if self.typ() == wtypes::VT_BSTR as u16 {
-            let path = *(*self.0).n1.n2().n3.bstrVal();
+            let path = *self.val().bstrVal();
             let path = string_from_wstr(path);
             Ok(Path::from(ArcStr::from(&*path.to_string_lossy())))
         } else {
@@ -247,7 +303,7 @@ impl Variant {
 
     unsafe fn as_variant_array(&self) -> Result<VariantArray> {
         if self.typ() == (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16 {
-            Ok(VariantArray::new(*(*self.0).n1.n2().n3.parray()))
+            Ok(VariantArray::new(*self.val().parray()))
         } else {
             bail!("not a variant array")
         }
@@ -255,7 +311,7 @@ impl Variant {
 
     unsafe fn as_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
         if self.typ() == wtypes::VT_DISPATCH as u16 {
-            Ok(IRTDUpdateEventWrap::new(*(*self.0).n1.n2().n3.pdispVal())?)
+            Ok(IRTDUpdateEventWrap::new(*self.val().pdispVal())?)
         } else {
             bail!("not an update event interface")
         }
@@ -300,6 +356,24 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     }
     let path = topics.get(0).as_path()?;
     Ok(server.connect_data(topic_id, path)?)
+}
+
+unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result: *mut VARIANT) -> Result<()> {
+    use netidx::subscriber::{Event, Value};
+    let params = Params::new(params)?;
+    let result = Variant::new(result);
+    debug!("param count: {}", params.len());
+    debug!("param type: {}", params.get(0).typ());
+    debug!("result type: {}", result.typ());
+    let mut updates = server.refresh_data();
+    let array = SafeArrayCreateVector(wtypes::VT_VARIANT as u16, 0, updates.len() * 2 as u32);
+    for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
+        let tid_ptr = (*array).pvData.cast::<VARIANT>().offset(i as isize);
+        VariantInit(tid_ptr);
+        (*tid_ptr).n1.n2().vt = wtypes::VT_I4 as u16;
+        *(*tid_ptr).n1.n2().n3.lVal_mut() = tid;
+    }
+    Ok(())
 }
 
 unsafe fn dispatch_disconnect_data(
@@ -378,6 +452,7 @@ com::class! {
                 id, iid, lcid, flags, params, result, exception, arg_error
             );
             assert!(!params.is_null());
+            debug!("result vt: {}", (*result).n1.n2().vt);
             match id {
                 0 => {
                     debug!("ServerStart");
@@ -405,7 +480,13 @@ com::class! {
                     }
                 },
                 3 => {
-                    debug!("RefreshData")
+                    debug!("RefreshData");
+                    match dispatch_refresh_data(&self.server, params, result) {
+                        Ok(()) => set_variant_lval(result, 1),
+                        Err(e) => {
+                            set_variant_lval(result, 0)
+                        }
+                    }
                 },
                 4 => {
                     debug!("DisconnectData");
