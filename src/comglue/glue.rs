@@ -25,6 +25,7 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     sync::mpsc,
+    time::Duration,
 };
 use winapi::{
     shared::{
@@ -93,6 +94,7 @@ unsafe fn irtd_update_event_loop(
     idp: *mut um::oaidl::IDispatch,
 ) {
     while let Ok(()) = rx.recv() {
+        while let Ok(()) = rx.try_recv() {}
         let mut args = [];
         let mut named_args = [];
         let mut params = DISPPARAMS {
@@ -187,7 +189,7 @@ impl IRTDUpdateEventWrap {
         Ok(IRTDUpdateEventWrap(tx))
     }
 
-    pub(crate) fn update_notify(&mut self) {
+    pub(crate) fn update_notify(&self) {
         let _ = self.0.send(());
     }
 }
@@ -502,13 +504,12 @@ com::class! {
                 id, iid, lcid, flags, params, result, exception, arg_error
             );
             assert!(!params.is_null());
-            debug!("result vt: {}", (*result).n1.n2().vt);
             let mut result = Variant::new(result);
             match id {
                 0 => {
                     debug!("ServerStart");
                     match dispatch_server_start(&self.server, params) {
-                        Ok(()) => result.set_null(),
+                        Ok(()) => result.set_i32(1),
                         Err(e) => {
                             error!("server_start invalid arg {}", e);
                             result.set_error()
@@ -523,7 +524,7 @@ com::class! {
                 2 => {
                     debug!("ConnectData");
                     match dispatch_connect_data(&self.server, params) {
-                        Ok(()) => result.set_null(),
+                        Ok(()) => result.set_i32(1),
                         Err(e) => {
                             error!("connect_data invalid arg {}", e);
                             result.set_error();
@@ -543,7 +544,7 @@ com::class! {
                 4 => {
                     debug!("DisconnectData");
                     match dispatch_disconnect_data(&self.server, params) {
-                        Ok(()) => result.set_null(),
+                        Ok(()) => result.set_i32(1),
                         Err(e) => {
                             error!("disconnect_data invalid arg {}", e);
                             result.set_error()
@@ -552,7 +553,7 @@ com::class! {
                 },
                 5 => {
                     debug!("Heartbeat");
-                    result.set_null();
+                    result.set_i32(1);
                 },
                 _ => {
                     debug!("unknown method {} called", id)

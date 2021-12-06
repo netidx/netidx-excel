@@ -129,6 +129,10 @@ impl Server {
         debug!("connect_data");
         let mut inner = self.0.lock();
         let dv = inner.subscriber.durable_subscribe(path);
+        inner.pending.insert(tid, dv.last());
+        if let Some(update) = inner.update.as_ref() {
+            update.update_notify()
+        }
         dv.updates(UpdatesFlags::BEGIN_WITH_LAST, inner.updates.clone());
         inner
             .by_id
