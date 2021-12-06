@@ -5,8 +5,7 @@ edition = "2021"
 
 [dependencies]
 com = { version = "0.6", features = ["production"] }
-winapi = { version = "0.3", features = ["oaidl", "winuser", "winnt", "winerror", "objidlbase", "processthreadsapi"]}
-oaidl = "0.2"
+winapi = { version = "0.3", features = ["oaidl", "oleauto", "winuser", "winnt", "winerror", "objidlbase", "processthreadsapi"]}
 log = "0.4"
 simplelog = "0.11"
 once_cell = "1"

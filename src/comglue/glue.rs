@@ -1,7 +1,6 @@
 use crate::{
     comglue::interface::{
-        IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH, IID_IRTDSERVER,
-        IID_IRTDUPDATE_EVENT,
+        IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH,
     },
     server::{Server, TopicId},
 };
@@ -13,25 +12,22 @@ use com::{
 };
 use log::{debug, error, LevelFilter};
 use netidx::path::Path;
-use oaidl::{SafeArrayExt, VariantExt, VtNull};
 use once_cell::sync::Lazy;
 use simplelog;
 use std::{
     boxed::Box,
     ffi::{c_void, OsString},
     fs::File,
-    marker::{Send, Sync},
     mem,
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     sync::mpsc,
-    time::Duration,
 };
 use winapi::{
     shared::{
         guiddef::{GUID, IID_NULL},
         minwindef::{UINT, WORD},
-        winerror::{ERROR_CREATE_FAILED, FAILED, SUCCEEDED},
+        winerror::FAILED,
         wtypes,
         wtypesbase::LPOLESTR,
     },
@@ -41,7 +37,7 @@ use winapi::{
             CoGetInterfaceAndReleaseStream, CoInitializeEx,
             CoMarshalInterThreadInterfaceInStream, CoUninitialize,
         },
-        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_n3},
+        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT, VARIANT_n3},
         objidlbase::IStream,
         oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD, SafeArrayCreateVector, VariantInit, SysAllocStringLen},
         processthreadsapi::CreateThread,
@@ -103,8 +99,8 @@ unsafe fn irtd_update_event_loop(
             cArgs: 0,
             cNamedArgs: 0,
         };
-        let mut _result =
-            VariantExt::into_variant(VtNull).expect("couldn't create result variant");
+        let mut result_: VARIANT = mem::zeroed();
+        Variant(&mut result_).set_null();
         let mut _arg_err = 0;
         let hr = (*idp).Invoke(
             update_notify,
@@ -112,7 +108,7 @@ unsafe fn irtd_update_event_loop(
             0,
             DISPATCH_METHOD,
             &mut params,
-            _result.as_ptr(),
+            &mut result_,
             ptr::null_mut(),
             &mut _arg_err,
         );
@@ -393,11 +389,14 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
 unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result: &mut Variant) -> Result<()> {
     use netidx::subscriber::{Event, Value};
     let params = Params::new(params)?;
-    debug!("param count: {}", params.len());
-    debug!("param type: {}", params.get(0).typ());
-    debug!("result type: {}", result.typ());
+    if params.len() != 1 {
+        bail!("refresh_data unexpected number of params")
+    }
+    let ntopics = params.get(0);
     let mut updates = server.refresh_data();
-    let array = VariantArray::alloc(updates.len() * 2);
+    let len = updates.len();
+    *ntopics.get_byref_i32()? = len as i32;
+    let array = VariantArray::alloc(len * 2);
     for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
         let i = i as isize;
         array.get(i).set_i32(tid);
