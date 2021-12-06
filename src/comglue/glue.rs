@@ -2,10 +2,9 @@ use crate::{
     comglue::interface::{IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH},
     server::{Server, TopicId},
 };
-use anyhow::{bail, anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use com::{
-    interfaces::IUnknown,
     sys::{HRESULT, IID, NOERROR},
 };
 use log::{debug, error, LevelFilter};
@@ -24,7 +23,8 @@ use std::{
 use windows::{
     core::GUID,
     Win32::{
-        Foundation::{PWSTR, SysAllocStringLen},
+        Foundation::{SysAllocStringLen, PWSTR},
+        Globalization::lstrlenW,
         System::{
             Com::{
                 self, CoInitialize, CoUninitialize, IStream, ITypeInfo,
@@ -32,8 +32,10 @@ use windows::{
                 StructuredStorage::CoGetInterfaceAndReleaseStream, DISPPARAMS, EXCEPINFO,
                 SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0,
             },
-            Globalization::lstrlenW,
-            Ole::{self, SafeArrayCreate, SafeArrayPutElement, SafeArrayGetLBound, SafeArrayGetUBound, VariantInit, VariantClear, SafeArrayGetElement},
+            Ole::{
+                self, SafeArrayCreate, SafeArrayGetLBound,
+                SafeArrayGetUBound, SafeArrayPutElement, VariantClear, VariantInit,
+            },
             Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
     },
@@ -50,8 +52,8 @@ pub fn maybe_init_logger() {
     *LOGGER
 }
 
-unsafe fn string_from_wstr<'a>(s: *const u16) -> OsString {
-    OsString::from_wide(std::slice::from_raw_parts(s, lstrlenW(s) as usize))
+unsafe fn string_from_wstr<'a>(s: *mut u16) -> OsString {
+    OsString::from_wide(std::slice::from_raw_parts(s, lstrlenW(PWSTR(s)) as usize))
 }
 
 fn str_to_wstr(s: &str) -> Vec<u16> {
@@ -157,7 +159,11 @@ pub(crate) struct IRTDUpdateEventWrap(mpsc::Sender<()>);
 impl IRTDUpdateEventWrap {
     unsafe fn new(disp: *mut Com::IDispatch) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let stream = CoMarshalInterThreadInterfaceInStream(&GUID::zeroed(), *disp).map_err(|e| anyhow!(e.to_string()))?;
+        let stream = CoMarshalInterThreadInterfaceInStream(
+            &GUID::zeroed(),
+            windows::core::IUnknown::from(&*disp),
+        )
+        .map_err(|e| anyhow!(e.to_string()))?;
         let args = Box::new(IRTDUpdateEventThreadArgs { stream, rx });
         let mut threadid = 0u32;
         CreateThread(
@@ -184,8 +190,8 @@ impl VariantVector {
     }
 
     unsafe fn len(&self) -> usize {
-        let mut lbound = SafeArrayGetLBound(self.0, 1).unwrap();
-        let mut ubound = SafeArrayGetUBound(self.0, 1).unwrap();
+        let lbound = SafeArrayGetLBound(self.0, 1).unwrap();
+        let ubound = SafeArrayGetUBound(self.0, 1).unwrap();
         (1 + ubound - lbound) as usize
     }
 
@@ -200,7 +206,7 @@ impl VariantVector2D {
     unsafe fn alloc(rows: usize, cols: usize) -> VariantVector2D {
         let dims = [
             SAFEARRAYBOUND { cElements: cols as u32, lLbound: 0 },
-            SAFEARRAYBOUND { cElements: rows as u32, lLbound: 0 }
+            SAFEARRAYBOUND { cElements: rows as u32, lLbound: 0 },
         ];
         VariantVector2D(SafeArrayCreate(Ole::VT_VARIANT.0 as u16, 2, dims.as_ptr()))
     }
@@ -213,6 +219,7 @@ impl VariantVector2D {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Variant(*mut VARIANT);
 
 impl Variant {
@@ -221,7 +228,7 @@ impl Variant {
     }
 
     unsafe fn clear(&self) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
     }
 
     unsafe fn typ(&self) -> u16 {
@@ -241,59 +248,59 @@ impl Variant {
     }
 
     unsafe fn set_bool(&mut self, v: bool) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_BOOL);
         self.val_mut().boolVal = if v { -1 } else { 0 };
     }
 
     unsafe fn set_null(&mut self) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_NULL);
     }
 
     unsafe fn set_error(&mut self) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_ERROR);
     }
 
     unsafe fn set_i32(&mut self, v: i32) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_I4);
         self.val_mut().lVal = v;
     }
 
     unsafe fn set_u32(&mut self, v: u32) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_UI4);
         self.val_mut().ulVal = v;
     }
 
     unsafe fn set_i64(&mut self, v: i64) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_I8);
         self.val_mut().llVal = v;
     }
 
     unsafe fn set_u64(&mut self, v: u64) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_UI8);
         self.val_mut().ullVal = v;
     }
 
     unsafe fn set_f32(&mut self, v: f32) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_R4);
         self.val_mut().fltVal = v;
     }
 
     unsafe fn set_f64(&mut self, v: f64) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_R8);
         self.val_mut().dblVal = v;
     }
 
     unsafe fn set_string(&mut self, v: &str) {
-        VariantClear(self.0);
+        let _ = VariantClear(self.0);
         self.set_typ(Ole::VT_BSTR);
         let mut s = str_to_wstr(v);
         let bs = SysAllocStringLen(PWSTR(s.as_mut_ptr()), s.len() as u32);
@@ -324,7 +331,7 @@ impl Variant {
 
     unsafe fn get_path(&self) -> Result<Path> {
         if self.typ() == Ole::VT_BSTR.0 as u16 {
-            let path = self.val().bstrVal;
+            let path = &self.val().bstrVal;
             let path = string_from_wstr(path.0);
             Ok(Path::from(ArcStr::from(&*path.to_string_lossy())))
         } else {
@@ -428,9 +435,7 @@ unsafe fn dispatch_refresh_data(
                 Value::Error(e) => var.set_string(&format!("#ERR {}", &*e)),
                 Value::Array(_) => var.set_string("#ARRAY"), // CR estokes: implement this?
                 Value::DateTime(d) => var.set_string(&d.to_string()),
-                Value::Duration(d) => {
-                    var.set_string(&format!("{}s", d.as_secs_f64()))
-                }
+                Value::Duration(d) => var.set_string(&format!("{}s", d.as_secs_f64())),
             },
         }
         array.put(1, i, var);
@@ -476,7 +481,7 @@ com::class! {
             names: *const *mut u16,
             names_len: u32,
             lcid: u32,
-            ids: *mut u32
+            ids: *mut i32
         ) -> HRESULT {
             maybe_init_logger();
             debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
@@ -501,7 +506,7 @@ com::class! {
 
         unsafe fn invoke(
             &self,
-            id: u32,
+            id: i32,
             iid: *const IID,
             lcid: u32,
             flags: u16,

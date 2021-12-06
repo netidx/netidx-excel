@@ -2,16 +2,7 @@ use com::{
     interfaces::IUnknown,
     sys::{HRESULT, IID},
 };
-use winapi::{
-    shared::{
-        minwindef::{UINT, WORD},
-        wtypesbase::LPOLESTR,
-    },
-    um::{
-        oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT},
-        winnt::LCID,
-    },
-};
+use windows::Win32::System::Com::{ITypeInfo, DISPPARAMS, EXCEPINFO, SAFEARRAY, VARIANT};
 
 // bde5f32a-14d9-414e-a0af-8390a1601944
 pub const CLSID: IID = IID {
@@ -24,26 +15,26 @@ pub const CLSID: IID = IID {
 com::interfaces! {
     #[uuid("00020400-0000-0000-C000-000000000046")]
     pub unsafe interface IDispatch: IUnknown {
-        pub fn get_type_info_count(&self, info: *mut UINT) -> HRESULT;
-        pub fn get_type_info(&self, lcid: LCID, type_info: *mut *mut ITypeInfo) -> HRESULT;
+        pub fn get_type_info_count(&self, info: *mut u32) -> HRESULT;
+        pub fn get_type_info(&self, lcid: u32, type_info: *mut *mut ITypeInfo) -> HRESULT;
         pub fn get_ids_of_names(
             &self,
             riid: *const IID,
-            names: *const LPOLESTR,
-            names_len: UINT,
-            lcid: LCID,
-            ids: *mut DISPID
+            names: *const *mut u16,
+            names_len: u32,
+            lcid: u32,
+            ids: *mut i32
         ) -> HRESULT;
         pub fn invoke(
             &self,
-            id: DISPID,
+            id: i32,
             iid: *const IID,
-            lcid: LCID,
-            flags: WORD,
+            lcid: u32,
+            flags: u16,
             params: *mut DISPPARAMS,
             result: *mut VARIANT,
             exception: *mut EXCEPINFO,
-            arg_error: *mut UINT
+            arg_error: *mut u32
         ) -> HRESULT;
     }
 
