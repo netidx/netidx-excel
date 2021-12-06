@@ -42,7 +42,7 @@ use winapi::{
         },
         oaidl::{ITypeInfo, DISPID, DISPPARAMS, EXCEPINFO, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_n3},
         objidlbase::IStream,
-        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD, SafeArrayCreateVector, VariantInit},
+        oleauto::{SafeArrayGetLBound, SafeArrayGetUBound, DISPATCH_METHOD, SafeArrayCreateVector, VariantInit, SysAllocStringLen},
         processthreadsapi::CreateThread,
         winbase::lstrlenW,
         winnt::LCID,
@@ -68,10 +68,6 @@ fn str_to_wstr(s: &str) -> Vec<u16> {
     let mut v = OsString::from(s).encode_wide().collect::<Vec<_>>();
     v.push(0);
     v
-}
-
-unsafe fn set_variant_lval(v: *mut VARIANT, l: i32) {
-    *(*v).n1.n2_mut().n3.lVal_mut() = l;
 }
 
 // IRTDUpdateEvent is single apartment threaded, and that means we need to ask COM
@@ -203,6 +199,11 @@ impl VariantArray {
         VariantArray(p)
     }
 
+    unsafe fn alloc(len: usize) -> Self {
+        let p = SafeArrayCreateVector(wtypes::VT_VARIANT as u16, 0, len as u32);
+        Self::new(p)
+    }
+
     unsafe fn len(&self) -> usize {
         let mut lbound = 0;
         let mut ubound = 0;
@@ -227,55 +228,84 @@ impl Variant {
         (*self.0).n1.n2().vt
     }
 
-    unsafe fn typ_mut(&self) -> &mut u16 {
-        &mut (*self.0).n1.n2().vt
+    unsafe fn typ_mut(&mut self) -> &mut u16 {
+        &mut (*self.0).n1.n2_mut().vt
     }
 
     unsafe fn val(&self) -> &VARIANT_n3 {
         &(*self.0).n1.n2().n3
     }
 
-    unsafe fn val_mut(&self) -> &mut VARIANT_n3 {
-        &mut (*self.0).n1.n2().n3
+    unsafe fn val_mut(&mut self) -> &mut VARIANT_n3 {
+        &mut (*self.0).n1.n2_mut().n3
     }
 
-    unsafe fn set_i32(&self, v: i32) {
+    unsafe fn set_bool(&mut self, v: bool) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_BOOL as u16;
+        *self.val_mut().boolVal_mut() = if v { wtypes::VARIANT_TRUE } else { wtypes::VARIANT_FALSE };
+    }
+
+    unsafe fn set_null(&mut self) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_NULL as u16;
+    }
+
+    unsafe fn set_error(&mut self) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_ERROR as u16;
+    }
+
+    unsafe fn set_i32(&mut self, v: i32) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_I4 as u16;
         *self.val_mut().lVal_mut() = v;
     }
 
-    unsafe fn set_u32(&self, v: u32) {
+    unsafe fn set_u32(&mut self, v: u32) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_UI4 as u16;
         *self.val_mut().ulVal_mut() = v;
     }
 
-    unsafe fn set_i64(&self, v: i64) {
+    unsafe fn set_i64(&mut self, v: i64) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_I8 as u16;
         *self.val_mut().llVal_mut() = v;
     }
 
-    unsafe fn set_u64(&self, v: u64) {
+    unsafe fn set_u64(&mut self, v: u64) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_UI8 as u16;
         *self.val_mut().ullVal_mut() = v;
     }
 
-    unsafe fn set_f32(&self, v: f32) {
+    unsafe fn set_f32(&mut self, v: f32) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_R4 as u16;
         *self.val_mut().fltVal_mut() = v;
     }
 
-    unsafe fn set_f64(&self, v: f64) {
+    unsafe fn set_f64(&mut self, v: f64) {
         VariantInit(self.0);
         *self.typ_mut() = wtypes::VT_R8 as u16;
         *self.val_mut().dblVal_mut() = v;
     }
 
-    unsafe fn as_i32(&self) -> Result<i32> {
+    unsafe fn set_string(&mut self, v: &str) {
+        VariantInit(self.0);
+        *self.typ_mut() = wtypes::VT_BSTR as u16;
+        let s = str_to_wstr(v);
+        *self.val_mut().bstrVal_mut() = SysAllocStringLen(s.as_ptr(), s.len() as u32);
+    }
+
+    unsafe fn set_variant_array(&mut self, v: VariantArray) {
+        VariantInit(self.0);
+        *self.typ_mut() = (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16;
+        *self.val_mut().parray_mut() = v.0;
+    }
+
+    unsafe fn get_i32(&self) -> Result<i32> {
         if self.typ() == wtypes::VT_I4 as u16 {
             Ok(*self.val().lVal())
         } else {
@@ -283,7 +313,7 @@ impl Variant {
         }
     }
 
-    unsafe fn as_byref_i32(&self) -> Result<*mut i32> {
+    unsafe fn get_byref_i32(&self) -> Result<*mut i32> {
         if self.typ() == (wtypes::VT_I4 | wtypes::VT_BYREF) as u16 {
             Ok(*self.val().plVal())
         } else {
@@ -291,7 +321,7 @@ impl Variant {
         }
     }
 
-    unsafe fn as_path(&self) -> Result<Path> {
+    unsafe fn get_path(&self) -> Result<Path> {
         if self.typ() == wtypes::VT_BSTR as u16 {
             let path = *self.val().bstrVal();
             let path = string_from_wstr(path);
@@ -301,7 +331,7 @@ impl Variant {
         }
     }
 
-    unsafe fn as_variant_array(&self) -> Result<VariantArray> {
+    unsafe fn get_variant_array(&self) -> Result<VariantArray> {
         if self.typ() == (wtypes::VT_ARRAY | wtypes::VT_VARIANT) as u16 {
             Ok(VariantArray::new(*self.val().parray()))
         } else {
@@ -309,7 +339,7 @@ impl Variant {
         }
     }
 
-    unsafe fn as_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
+    unsafe fn get_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
         if self.typ() == wtypes::VT_DISPATCH as u16 {
             Ok(IRTDUpdateEventWrap::new(*self.val().pdispVal())?)
         } else {
@@ -339,7 +369,7 @@ impl Params {
 
 unsafe fn dispatch_server_start(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
     let params = Params::new(params)?;
-    let updates = params.get(0).as_irtd_update_event()?;
+    let updates = params.get(0).get_irtd_update_event()?;
     server.server_start(updates);
     Ok(())
 }
@@ -349,30 +379,50 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     if params.len() != 3 {
         bail!("wrong number of args")
     }
-    let topic_id = TopicId(params.get(2).as_long()?);
-    let topics = params.get(1).as_variant_array()?;
+    let topic_id = TopicId(params.get(2).get_i32()?);
+    let topics = params.get(1).get_variant_array()?;
     if topics.len() == 0 {
         bail!("not enough topics")
     }
-    let path = topics.get(0).as_path()?;
+    let path = topics.get(0).get_path()?;
     Ok(server.connect_data(topic_id, path)?)
 }
 
-unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result: *mut VARIANT) -> Result<()> {
+unsafe fn dispatch_refresh_data(server: &Server, params: *mut DISPPARAMS, result: &mut Variant) -> Result<()> {
     use netidx::subscriber::{Event, Value};
     let params = Params::new(params)?;
-    let result = Variant::new(result);
     debug!("param count: {}", params.len());
     debug!("param type: {}", params.get(0).typ());
     debug!("result type: {}", result.typ());
     let mut updates = server.refresh_data();
-    let array = SafeArrayCreateVector(wtypes::VT_VARIANT as u16, 0, updates.len() * 2 as u32);
+    let array = VariantArray::alloc(updates.len() * 2);
     for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
-        let tid_ptr = (*array).pvData.cast::<VARIANT>().offset(i as isize);
-        VariantInit(tid_ptr);
-        (*tid_ptr).n1.n2().vt = wtypes::VT_I4 as u16;
-        *(*tid_ptr).n1.n2().n3.lVal_mut() = tid;
+        let i = i as isize;
+        array.get(i).set_i32(tid);
+        let i = i + 1;
+        match e {
+            Event::Unsubscribed => array.get(i).set_string("#SUB"),
+            Event::Update(v) => match v {
+                Value::I32(v) | Value::Z32(v) => array.get(i).set_i32(v),
+                Value::U32(v) | Value::V32(v) => array.get(i).set_u32(v),
+                Value::I64(v) | Value::Z64(v) => array.get(i).set_i64(v),
+                Value::U64(v) | Value::V64(v) => array.get(i).set_u64(v),
+                Value::F32(v) => array.get(i).set_f32(v),
+                Value::F64(v) => array.get(i).set_f64(v),
+                Value::True => array.get(i).set_bool(true),
+                Value::False => array.get(i).set_bool(false),
+                Value::String(s) => array.get(i).set_string(&*s),
+                Value::Bytes(_) => array.get(i).set_string("#BIN"),
+                Value::Null => array.get(i).set_null(),
+                Value::Ok => array.get(i).set_string("OK"),
+                Value::Error(e) => array.get(i).set_string(&format!("#ERR {}", &*e)),
+                Value::Array(_) => array.get(i).set_string("#ARRAY"), // CR estokes: implement this?
+                Value::DateTime(d) => array.get(i).set_string(&d.to_string()),
+                Value::Duration(d) => array.get(i).set_string(&format!("{}s", d.as_secs_f64()))
+            }
+        }
     }
+    result.set_variant_array(array);
     Ok(())
 }
 
@@ -384,7 +434,7 @@ unsafe fn dispatch_disconnect_data(
     if params.len() != 1 {
         bail!("wrong number of args")
     }
-    let topic_id = TopicId(params.get(0).as_long()?);
+    let topic_id = TopicId(params.get(0).get_i32()?);
     Ok(server.disconnect_data(topic_id))
 }
 
@@ -453,54 +503,56 @@ com::class! {
             );
             assert!(!params.is_null());
             debug!("result vt: {}", (*result).n1.n2().vt);
+            let mut result = Variant::new(result);
             match id {
                 0 => {
                     debug!("ServerStart");
                     match dispatch_server_start(&self.server, params) {
-                        Ok(()) => set_variant_lval(result, 1),
+                        Ok(()) => result.set_null(),
                         Err(e) => {
                             error!("server_start invalid arg {}", e);
-                            set_variant_lval(result, 0)
+                            result.set_error()
                         }
                     }
                },
                 1 => {
                     debug!("ServerTerminate");
                     self.server.server_terminate();
-                    set_variant_lval(result, 1);
+                    result.set_null();
                 },
                 2 => {
                     debug!("ConnectData");
                     match dispatch_connect_data(&self.server, params) {
-                        Ok(()) => set_variant_lval(result, 1),
+                        Ok(()) => result.set_null(),
                         Err(e) => {
                             error!("connect_data invalid arg {}", e);
-                            set_variant_lval(result, 0)
+                            result.set_error();
                         }
                     }
                 },
                 3 => {
                     debug!("RefreshData");
-                    match dispatch_refresh_data(&self.server, params, result) {
-                        Ok(()) => set_variant_lval(result, 1),
+                    match dispatch_refresh_data(&self.server, params, &mut result) {
+                        Ok(()) => (),
                         Err(e) => {
-                            set_variant_lval(result, 0)
+                            error!("refresh_data failed {}", e);
+                            result.set_error()
                         }
                     }
                 },
                 4 => {
                     debug!("DisconnectData");
                     match dispatch_disconnect_data(&self.server, params) {
-                        Ok(()) => set_variant_lval(result, 1),
+                        Ok(()) => result.set_null(),
                         Err(e) => {
                             error!("disconnect_data invalid arg {}", e);
-                            set_variant_lval(result, 0)
+                            result.set_error()
                         }
                     }
                 },
                 5 => {
                     debug!("Heartbeat");
-                    set_variant_lval(result, 1);
+                    result.set_null();
                 },
                 _ => {
                     debug!("unknown method {} called", id)
