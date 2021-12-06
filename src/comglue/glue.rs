@@ -4,9 +4,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
-use com::{
-    sys::{HRESULT, IID, NOERROR},
-};
+use com::sys::{HRESULT, IID, NOERROR};
 use log::{debug, error, LevelFilter};
 use netidx::path::Path;
 use once_cell::sync::Lazy;
@@ -21,7 +19,7 @@ use std::{
     sync::mpsc,
 };
 use windows::{
-    core::GUID,
+    core::{Abi, GUID},
     Win32::{
         Foundation::{SysAllocStringLen, PWSTR},
         Globalization::lstrlenW,
@@ -33,8 +31,8 @@ use windows::{
                 SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0,
             },
             Ole::{
-                self, SafeArrayCreate, SafeArrayGetLBound,
-                SafeArrayGetUBound, SafeArrayPutElement, VariantClear, VariantInit,
+                self, SafeArrayCreate, SafeArrayGetLBound, SafeArrayGetUBound,
+                SafeArrayPutElement, VariantClear, VariantInit,
             },
             Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
@@ -157,13 +155,10 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
 pub(crate) struct IRTDUpdateEventWrap(mpsc::Sender<()>);
 
 impl IRTDUpdateEventWrap {
-    unsafe fn new(disp: *mut Com::IDispatch) -> Result<Self> {
+    unsafe fn new(disp: Com::IDispatch) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let stream = CoMarshalInterThreadInterfaceInStream(
-            &GUID::zeroed(),
-            windows::core::IUnknown::from(&*disp),
-        )
-        .map_err(|e| anyhow!(e.to_string()))?;
+        let stream = CoMarshalInterThreadInterfaceInStream(&IDISPATCH_GUID, disp)
+            .map_err(|e| anyhow!(e.to_string()))?;
         let args = Box::new(IRTDUpdateEventThreadArgs { stream, rx });
         let mut threadid = 0u32;
         CreateThread(
@@ -349,7 +344,11 @@ impl Variant {
 
     unsafe fn get_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
         if self.typ() == Ole::VT_DISPATCH.0 as u16 {
-            Ok(IRTDUpdateEventWrap::new(self.val().pdispVal.cast::<Com::IDispatch>())?)
+            debug!("from abi on interface");
+            let disp = Com::IDispatch::from_abi(self.val().pdispVal)
+                .map_err(|e| anyhow!(e.to_string()))?;
+            debug!("wrapping interface");
+            Ok(IRTDUpdateEventWrap::new(disp)?)
         } else {
             bail!("not an update event interface")
         }
