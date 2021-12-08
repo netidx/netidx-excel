@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use com::sys::{HRESULT, IID, NOERROR};
 use log::{debug, error, LevelFilter};
-use netidx::path::Path;
+use netidx::{path::Path, subscriber::{Event, Value}};
 use once_cell::sync::Lazy;
 use simplelog;
 use std::{
@@ -17,6 +17,8 @@ use std::{
     os::windows::ffi::{OsStrExt, OsStringExt},
     ptr,
     sync::mpsc,
+    thread,
+    time::Duration,
 };
 use windows::{
     core::{Abi, GUID},
@@ -50,16 +52,6 @@ pub fn maybe_init_logger() {
     *LOGGER
 }
 
-unsafe fn string_from_wstr<'a>(s: *mut u16) -> OsString {
-    OsString::from_wide(std::slice::from_raw_parts(s, lstrlenW(PWSTR(s)) as usize))
-}
-
-fn str_to_wstr(s: &str) -> Vec<u16> {
-    let mut v = OsString::from(s).encode_wide().collect::<Vec<_>>();
-    v.push(0);
-    v
-}
-
 // IRTDUpdateEvent is single apartment threaded, and that means we need to ask COM
 // to make a proxy for us in order to run it in another thread. Since we MUST run in
 // another thread to be async, this is mandatory. We have to marshal the interface when
@@ -84,29 +76,35 @@ unsafe fn irtd_update_event_loop(
 ) {
     while let Ok(()) = rx.recv() {
         while let Ok(()) = rx.try_recv() {}
-        let mut args = [];
-        let mut named_args = [];
-        let mut params = DISPPARAMS {
-            rgvarg: args.as_mut_ptr(),
-            rgdispidNamedArgs: named_args.as_mut_ptr(),
-            cArgs: 0,
-            cNamedArgs: 0,
-        };
-        let mut result_: VARIANT = mem::zeroed();
-        Variant(&mut result_).set_null();
-        let mut _arg_err = 0;
-        let hr = idp.Invoke(
-            update_notify,
-            &GUID::zeroed(),
-            0,
-            Ole::DISPATCH_METHOD as u16,
-            &mut params,
-            &mut result_,
-            ptr::null_mut(),
-            &mut _arg_err,
-        );
-        if let Err(e) = hr {
-            error!("IRTDUpdateEvent: update_notify failed {}", e);
+        loop {
+            let mut args = [];
+            let mut named_args = [];
+            let mut params = DISPPARAMS {
+                rgvarg: args.as_mut_ptr(),
+                rgdispidNamedArgs: named_args.as_mut_ptr(),
+                cArgs: 0,
+                cNamedArgs: 0,
+            };
+            let mut result_: VARIANT = mem::zeroed();
+            VariantRef(&mut result_).set_null();
+            let mut _arg_err = 0;
+            let hr = idp.Invoke(
+                update_notify,
+                &GUID::zeroed(),
+                0,
+                Ole::DISPATCH_METHOD as u16,
+                &mut params,
+                &mut result_,
+                ptr::null_mut(),
+                &mut _arg_err,
+            );
+            match hr {
+                Ok(()) => break,
+                Err(e) => {
+                    error!("IRTDUpdateEvent: update_notify failed {}", e);
+                    thread::sleep(Duration::from_millis(250))
+                }
+            }
         }
     }
 }
@@ -190,8 +188,8 @@ impl VariantVector {
         (1 + ubound - lbound) as usize
     }
 
-    unsafe fn get(&self, i: isize) -> Variant {
-        Variant::new((*self.0).pvData.cast::<VARIANT>().offset(i))
+    unsafe fn get(&self, i: isize) -> VariantRef {
+        VariantRef::new((*self.0).pvData.cast::<VARIANT>().offset(i))
     }
 }
 
@@ -206,7 +204,7 @@ impl VariantVector2D {
         VariantVector2D(SafeArrayCreate(Ole::VT_VARIANT.0 as u16, 2, dims.as_ptr()))
     }
 
-    unsafe fn put(&self, col: usize, row: usize, val: Variant) {
+    unsafe fn put(&self, col: usize, row: usize, val: VariantRef) {
         let idx = [col as i32, row as i32];
         if let Err(e) = SafeArrayPutElement(self.0, idx.as_ptr(), val.0 as *mut c_void) {
             error!("failed to put element in VariantVector2D {}", e)
@@ -215,11 +213,11 @@ impl VariantVector2D {
 }
 
 #[derive(Clone, Copy)]
-struct Variant(*mut VARIANT);
+struct VariantRef(*mut VARIANT);
 
-impl Variant {
+impl VariantRef {
     fn new(p: *mut VARIANT) -> Self {
-        Variant(p)
+        VariantRef(p)
     }
 
     unsafe fn clear(&self) {
@@ -369,8 +367,8 @@ impl Params {
         (*self.0).cArgs as usize
     }
 
-    unsafe fn get(&self, i: isize) -> Variant {
-        Variant::new((*self.0).rgvarg.offset(i))
+    unsafe fn get(&self, i: isize) -> VariantRef {
+        VariantRef::new((*self.0).rgvarg.offset(i))
     }
 }
 
@@ -395,12 +393,20 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     Ok(server.connect_data(topic_id, path)?)
 }
 
+/*
+unsafe fn variant_of_event(e: Event) -> VARIANT {
+    let mut var_ = mem::zeroed();
+    VariantInit(&mut var_);
+    let mut var = VariantRef::new(&mut var_);
+
+}
+*/
+
 unsafe fn dispatch_refresh_data(
     server: &Server,
     params: *mut DISPPARAMS,
-    result: &mut Variant,
+    result: &mut VariantRef,
 ) -> Result<()> {
-    use netidx::subscriber::{Event, Value};
     let params = Params::new(params)?;
     if params.len() != 1 {
         bail!("refresh_data unexpected number of params")
@@ -412,7 +418,7 @@ unsafe fn dispatch_refresh_data(
     let array = VariantVector2D::alloc(len, 2);
     let mut var_: VARIANT = mem::zeroed();
     VariantInit(&mut var_);
-    let mut var = Variant::new(&mut var_);
+    let mut var = VariantRef::new(&mut var_);
     for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
         var.set_i32(tid);
         array.put(0, i, var);
@@ -520,7 +526,7 @@ com::class! {
                 id, iid, lcid, flags, params, result, exception, arg_error
             );
             assert!(!params.is_null());
-            let mut result = Variant::new(result);
+            let mut result = VariantRef::new(result);
             match id {
                 0 => {
                     debug!("ServerStart");

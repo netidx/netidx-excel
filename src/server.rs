@@ -66,7 +66,6 @@ impl Server {
     async fn updates_loop(self, mut up: mpsc::Receiver<Pooled<Vec<(SubId, Event)>>>) {
         debug!("updates loop started");
         while let Some(mut updates) = up.next().await {
-            debug!("got update batch");
             let mut inner = self.0.lock();
             let inner = &mut *inner;
             if let Some(update) = &mut inner.update {
@@ -86,6 +85,7 @@ impl Server {
                 }
             }
         }
+        debug!("updates loop terminated")
     }
 
     pub(crate) fn new() -> Server {
