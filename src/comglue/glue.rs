@@ -179,28 +179,31 @@ impl Params {
         (*self.0).cArgs as usize
     }
 
-    unsafe fn get(&self, i: usize) -> &Variant {
-        Variant::ref_from_raw((*self.0).rgvarg.offset(i as isize))
+    unsafe fn get(&self, i: usize) -> Result<&Variant> {
+        if i < self.len() {
+            Ok(Variant::ref_from_raw((*self.0).rgvarg.offset(i as isize)))
+        } else {
+            bail!("no param at index: {}", i)
+        }
     }
 
-    unsafe fn get_mut(&self, i: usize) -> &mut Variant {
-        Variant::ref_from_raw_mut((*self.0).rgvarg.offset(i as isize))
+    unsafe fn get_mut(&self, i: usize) -> Result<&mut Variant> {
+        if i < self.len() {
+            Ok(Variant::ref_from_raw_mut((*self.0).rgvarg.offset(i as isize)))
+        } else {
+            bail!("no param at index: {}", i)
+        }
     }
 }
 
-unsafe fn dispatch_server_start(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
-    let params = Params::new(params)?;
-    server.server_start(IRTDUpdateEventWrap::new(params.get(0).try_into()?)?);
+unsafe fn dispatch_server_start(server: &Server, params: Params) -> Result<()> {
+    server.server_start(IRTDUpdateEventWrap::new(params.get(0)?.try_into()?)?);
     Ok(())
 }
 
-unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
-    let params = Params::new(params)?;
-    if params.len() != 3 {
-        bail!("wrong number of args")
-    }
-    let topic_id = TopicId(params.get(2).try_into()?);
-    let topics: SafeArray = params.get(1).try_into()?;
+unsafe fn dispatch_connect_data(server: &Server, params: Params) -> Result<()> {
+    let topic_id = TopicId(params.get(2)?.try_into()?);
+    let topics: SafeArray = params.get(1)?.try_into()?;
     let topics = topics.read()?;
     let path = match topics.iter()?.next() {
         None => bail!("not enough topics"),
@@ -212,40 +215,52 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     Ok(server.connect_data(topic_id, path)?)
 }
 
-fn variant_of_event(e: Event) -> Variant {
+fn variant_of_value(v: &Value) -> Variant {
+    match v {
+        Value::I32(v) | Value::Z32(v) => Variant::from(*v),
+        Value::U32(v) | Value::V32(v) => Variant::from(*v),
+        Value::I64(v) | Value::Z64(v) => Variant::from(*v),
+        Value::U64(v) | Value::V64(v) => Variant::from(*v),
+        Value::F32(v) => Variant::from(*v),
+        Value::F64(v) => Variant::from(*v),
+        Value::True => Variant::from(true),
+        Value::False => Variant::from(false),
+        Value::String(s) => Variant::from(&**s),
+        Value::Bytes(_) => Variant::from("#BIN"),
+        Value::Null => Variant::null(),
+        Value::Ok => Variant::from("OK"),
+        Value::Error(e) => Variant::from(&format!("#ERR {}", &**e)),
+        Value::Array(a) => {
+            let mut sa = SafeArray::new(&[SAFEARRAYBOUND {
+                lLbound: 0,
+                cElements: a.len() as u32,
+            }]);
+            {
+                let mut wh = sa.write().unwrap();
+                for (i, v) in a.iter().enumerate() {
+                    *wh.get_mut(&[i as i32]).unwrap() = variant_of_value(v);
+                }
+            }
+            Variant::from(sa)
+        }
+        Value::DateTime(d) => Variant::from(&d.to_string()),
+        Value::Duration(d) => Variant::from(&format!("{}s", d.as_secs_f64())),
+    }
+}
+
+fn variant_of_event(e: &Event) -> Variant {
     match e {
         Event::Unsubscribed => Variant::from("#SUB"),
-        Event::Update(v) => match v {
-            Value::I32(v) | Value::Z32(v) => Variant::from(v),
-            Value::U32(v) | Value::V32(v) => Variant::from(v),
-            Value::I64(v) | Value::Z64(v) => Variant::from(v),
-            Value::U64(v) | Value::V64(v) => Variant::from(v),
-            Value::F32(v) => Variant::from(v),
-            Value::F64(v) => Variant::from(v),
-            Value::True => Variant::from(true),
-            Value::False => Variant::from(false),
-            Value::String(s) => Variant::from(&*s),
-            Value::Bytes(_) => Variant::from("#BIN"),
-            Value::Null => Variant::null(),
-            Value::Ok => Variant::from("OK"),
-            Value::Error(e) => Variant::from(&format!("#ERR {}", &*e)),
-            Value::Array(_) => Variant::from("#ARRAY"), // CR estokes: implement this
-            Value::DateTime(d) => Variant::from(&d.to_string()),
-            Value::Duration(d) => Variant::from(&format!("{}s", d.as_secs_f64())),
-        },
+        Event::Update(v) => variant_of_value(v),
     }
 }
 
 unsafe fn dispatch_refresh_data(
     server: &Server,
-    params: *mut DISPPARAMS,
+    params: Params,
     result: &mut Variant,
 ) -> Result<()> {
-    let params = Params::new(params)?;
-    if params.len() != 1 {
-        bail!("refresh_data unexpected number of params")
-    }
-    let ntopics = params.get_mut(0);
+    let ntopics = params.get_mut(0)?;
     let ntopics: &mut i32 = ntopics.try_into()?;
     let mut updates = server.refresh_data();
     let len = updates.len();
@@ -258,22 +273,15 @@ unsafe fn dispatch_refresh_data(
         let mut wh = array.write()?;
         for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
             *wh.get_mut(&[0, i as i32])? = Variant::from(tid);
-            *wh.get_mut(&[1, i as i32])? = variant_of_event(e);
+            *wh.get_mut(&[1, i as i32])? = variant_of_event(&e);
         }
     }
     *result = Variant::from(array);
     Ok(())
 }
 
-unsafe fn dispatch_disconnect_data(
-    server: &Server,
-    params: *mut DISPPARAMS,
-) -> Result<()> {
-    let params = Params::new(params)?;
-    if params.len() != 1 {
-        bail!("wrong number of args")
-    }
-    let topic_id = TopicId(params.get(0).try_into()?);
+unsafe fn dispatch_disconnect_data(server: &Server, params: Params) -> Result<()> {
+    let topic_id = TopicId(params.get(0)?.try_into()?);
     Ok(server.disconnect_data(topic_id))
 }
 
@@ -342,6 +350,14 @@ com::class! {
             );
             assert!(!params.is_null());
             let result = Variant::ref_from_raw_mut(result);
+            let params = match Params::new(params) {
+                Ok(p) => p,
+                Err(e) => {
+                    error!("failed to wrap params {}", e);
+                    *result = Variant::error();
+                    return NOERROR;
+                }
+            };
             match id {
                 0 => {
                     debug!("ServerStart");
