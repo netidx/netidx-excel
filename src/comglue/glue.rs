@@ -200,7 +200,7 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
         bail!("wrong number of args")
     }
     let topic_id = TopicId(params.get(2).try_into()?);
-    let topics: &SafeArray = params.get(1).try_into()?;
+    let topics: SafeArray = params.get(1).try_into()?;
     let topics = topics.read()?;
     let path = match topics.iter()?.next() {
         None => bail!("not enough topics"),

@@ -129,26 +129,14 @@ impl<'a> TryInto<IDispatch> for &'a Variant {
     }
 }
 
-impl<'a> TryInto<&'a SafeArray> for &'a Variant {
+impl<'a> TryInto<SafeArray> for &'a Variant {
     type Error = Error;
 
-    fn try_into(self) -> Result<&'a SafeArray, Self::Error> {
+    fn try_into(self) -> Result<SafeArray, Self::Error> {
         if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
             bail!("not a variant safearray")
         } else {
-            Ok(unsafe { SafeArray::ref_from_raw(self.val().parray)? })
-        }
-    }
-}
-
-impl<'a> TryInto<&'a mut SafeArray> for &'a mut Variant {
-    type Error = Error;
-
-    fn try_into(self) -> Result<&'a mut SafeArray, Self::Error> {
-        if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
-            bail!("not a variant safearray")
-        } else {
-            Ok(unsafe { SafeArray::ref_from_raw_mut(self.val().parray)? })
+            Ok(unsafe { SafeArray::from_raw(self.val().parray)? })
         }
     }
 }
@@ -296,13 +284,13 @@ impl Variant {
     // turn a const pointer to a `VARIANT` into a reference to a `Variant`.
     // take care to assign a reasonable lifetime.
     pub unsafe fn ref_from_raw<'a>(p: *const VARIANT) -> &'a Variant {
-        mem::transmute::<&'a VARIANT, &'a Variant>(&*p)
+        mem::transmute::<*const VARIANT, &'a Variant>(p)
     }
 
     // turn a mut pointer to a `VARIANT` into a mutable reference to a `Variant`.
     // take care to assign a reasonable lifetime.
     pub unsafe fn ref_from_raw_mut<'a>(p: *mut VARIANT) -> &'a mut Variant {
-        mem::transmute::<&'a mut VARIANT, &'a mut Variant>(&mut *p)
+        mem::transmute::<*mut VARIANT, &'a mut Variant>(p)
     }
 
     pub fn typ(&self) -> VARENUM {
@@ -341,26 +329,27 @@ pub struct SafeArrayIterMut<'a> {
     array: &'a mut SafeArray,
     bounds: Vec<SAFEARRAYBOUND>,
     idx: Vec<i32>,
+    end: bool,
 }
 
 impl<'a> Iterator for SafeArrayIterMut<'a> {
     type Item = &'a mut Variant;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !next_index(&self.bounds, &mut self.idx) {
+        if self.end {
             None
         } else {
-            unsafe {
+            let res = unsafe {
                 let mut vp: *mut VARIANT = ptr::null_mut();
-                match SafeArrayPtrOfIndex(
+                SafeArrayPtrOfIndex(
                     self.array.0,
                     self.idx.as_ptr(),
                     &mut vp as *mut *mut VARIANT as *mut *mut c_void,
-                ) {
-                    Ok(()) => Some(Variant::ref_from_raw_mut(vp)),
-                    Err(_) => None,
-                }
-            }
+                ).ok()?;
+                Some(Variant::ref_from_raw_mut(vp))
+            };
+            self.end = next_index(&self.bounds, &mut self.idx);
+            res
         }
     }
 }
@@ -369,26 +358,27 @@ pub struct SafeArrayIter<'a> {
     array: &'a SafeArray,
     bounds: Vec<SAFEARRAYBOUND>,
     idx: Vec<i32>,
+    end: bool
 }
 
 impl<'a> Iterator for SafeArrayIter<'a> {
     type Item = &'a Variant;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if !next_index(&self.bounds, &mut self.idx) {
+        if self.end {
             None
         } else {
-            unsafe {
+            let res = unsafe {
                 let mut vp: *mut VARIANT = ptr::null_mut();
-                match SafeArrayPtrOfIndex(
+                SafeArrayPtrOfIndex(
                     self.array.0,
                     self.idx.as_ptr(),
                     &mut vp as *mut *mut VARIANT as *mut *mut c_void,
-                ) {
-                    Ok(()) => Some(Variant::ref_from_raw(vp)),
-                    Err(_) => None,
-                }
-            }
+                ).ok()?;
+                Some(Variant::ref_from_raw(vp))
+            };
+            self.end = next_index(&self.bounds, &mut self.idx);
+            res
         }
     }
 }
@@ -418,11 +408,12 @@ impl<'a> SafeArrayReadGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
-        let len = bounds.len();
+        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
         Ok(SafeArrayIter {
             array: self.0,
             bounds,
-            idx: (0..len).into_iter().map(|_| 0).collect(),
+            idx,
+            end: false,
         })
     }
 
@@ -456,21 +447,23 @@ impl<'a> SafeArrayWriteGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
-        let len = bounds.len();
+        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
         Ok(SafeArrayIter {
             array: self.0,
             bounds,
-            idx: (0..len).into_iter().map(|_| 0).collect(),
+            idx,
+            end: false
         })
     }
 
     pub fn iter_mut(&mut self) -> Result<SafeArrayIterMut> {
         let bounds = self.bounds()?;
-        let len = bounds.len();
+        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
         Ok(SafeArrayIterMut {
             array: self.0,
             bounds,
-            idx: (0..len).into_iter().map(|_| 0).collect(),
+            idx,
+            end: false
         })
     }
 
@@ -511,14 +504,9 @@ impl SafeArray {
         Ok(())
     }
 
-    pub unsafe fn ref_from_raw<'a>(p: *const SAFEARRAY) -> Result<&'a Self> {
+    pub unsafe fn from_raw<'a>(p: *mut SAFEARRAY) -> Result<Self> {
         Self::check_pointer(p)?;
-        Ok(mem::transmute::<&SAFEARRAY, &SafeArray>(&*p))
-    }
-
-    pub unsafe fn ref_from_raw_mut<'a>(p: *mut SAFEARRAY) -> Result<&'a mut Self> {
-        Self::check_pointer(p)?;
-        Ok(mem::transmute::<&mut SAFEARRAY, &mut SafeArray>(&mut *p))
+        Ok(mem::transmute::<*mut SAFEARRAY, SafeArray>(p))
     }
 
     pub fn write<'a>(&'a mut self) -> Result<SafeArrayWriteGuard<'a>> {
@@ -559,8 +547,9 @@ impl SafeArray {
     fn bounds(&self) -> Result<Vec<SAFEARRAYBOUND>> {
         let dims = self.dims();
         let mut res = Vec::with_capacity(dims as usize);
-        for i in 0..dims {
-            res.push(self.bound(i)?)
+        for i in 1..=dims {
+            let bound = self.bound(i)?;
+            res.push(bound)
         }
         Ok(res)
     }
