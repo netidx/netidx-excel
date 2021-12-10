@@ -244,6 +244,18 @@ impl From<&str> for Variant {
     }
 }
 
+impl From<&String> for Variant {
+    fn from(s: &String) -> Self {
+        Variant::from(s.as_str())
+    }
+}
+
+impl From<String> for Variant {
+    fn from(s: String) -> Self {
+        Variant::from(s.as_str())
+    }
+}
+
 impl From<SafeArray> for Variant {
     fn from(a: SafeArray) -> Self {
         let mut v = Self::new();
@@ -272,6 +284,14 @@ impl Variant {
         let mut v = Self::default();
         unsafe { v.set_typ(VT_ERROR) }
         v
+    }
+
+    pub fn as_ptr(&self) -> *const VARIANT {
+        unsafe { mem::transmute::<&Variant, &VARIANT>(self) as *const VARIANT }
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut VARIANT {
+        unsafe { mem::transmute::<&mut Variant, &mut VARIANT>(self) as *mut VARIANT }
     }
 
     // turn a const pointer to a `VARIANT` into a reference to a `Variant`.
@@ -397,7 +417,7 @@ impl<'a> SafeArrayReadGuard<'a> {
         self.0.bounds()
     }
 
-    fn iter(&self) -> Result<SafeArrayIter> {
+    pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
         Ok(SafeArrayIter {
             array: self.0,
@@ -434,7 +454,7 @@ impl<'a> SafeArrayWriteGuard<'a> {
         self.0.bounds()
     }
 
-    fn iter(&self) -> Result<SafeArrayIter> {
+    pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
         Ok(SafeArrayIter {
             array: self.0,
@@ -443,7 +463,7 @@ impl<'a> SafeArrayWriteGuard<'a> {
         })
     }
 
-    fn iter_mut(&mut self) -> Result<SafeArrayIterMut> {
+    pub fn iter_mut(&mut self) -> Result<SafeArrayIterMut> {
         let bounds = self.bounds()?;
         Ok(SafeArrayIterMut {
             array: self.0,
@@ -507,6 +527,14 @@ impl SafeArray {
         }
     }
 
+    pub fn read<'a>(&'a self) -> Result<SafeArrayReadGuard<'a>> {
+        unsafe {
+            SafeArrayLock(self.0)
+                .map_err(|e| anyhow!("failed to lock safearray {}", e.to_string()))?;
+            Ok(SafeArrayReadGuard(self))
+        }
+    }
+    
     fn dims(&self) -> u32 {
         unsafe { SafeArrayGetDim(self.0) }
     }

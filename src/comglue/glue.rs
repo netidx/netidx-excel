@@ -82,8 +82,7 @@ unsafe fn irtd_update_event_loop(
                 cArgs: 0,
                 cNamedArgs: 0,
             };
-            let mut result_: VARIANT = mem::zeroed();
-            VariantRef(&mut result_).set_null();
+            let mut result = Variant::null();
             let mut _arg_err = 0;
             let hr = idp.Invoke(
                 update_notify,
@@ -91,7 +90,7 @@ unsafe fn irtd_update_event_loop(
                 0,
                 Ole::DISPATCH_METHOD as u16,
                 &mut params,
-                &mut result_,
+                result.as_mut_ptr(),
                 ptr::null_mut(),
                 &mut _arg_err,
             );
@@ -189,6 +188,10 @@ impl Params {
     unsafe fn get(&self, i: usize) -> &Variant {
         Variant::ref_from_raw((*self.0).rgvarg.offset(i as isize))
     }
+
+    unsafe fn get_mut(&self, i: usize) -> &mut Variant {
+        Variant::ref_from_raw_mut((*self.0).rgvarg.offset(i as isize))
+    }
 }
 
 unsafe fn dispatch_server_start(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
@@ -204,67 +207,67 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     }
     let topic_id = TopicId(params.get(2).try_into()?);
     let topics: &SafeArray = params.get(1).try_into()?;
-    if topics.len() == 0 {
-        bail!("not enough topics")
-    }
-    let path = topics.get(0).get_path()?;
+    let topics = topics.read()?;
+    let path = match topics.iter()?.next() {
+        None => bail!("not enough topics"),
+        Some(v) => {
+            let path: String = v.try_into()?;
+            Path::from(path)
+        }
+    };
     Ok(server.connect_data(topic_id, path)?)
 }
 
-/*
-unsafe fn variant_of_event(e: Event) -> VARIANT {
-    let mut var_ = mem::zeroed();
-    VariantInit(&mut var_);
-    let mut var = VariantRef::new(&mut var_);
-
+fn variant_of_event(e: Event) -> Variant {
+    match e {
+        Event::Unsubscribed => Variant::from("#SUB"),
+        Event::Update(v) => match v {
+            Value::I32(v) | Value::Z32(v) => Variant::from(v),
+            Value::U32(v) | Value::V32(v) => Variant::from(v),
+            Value::I64(v) | Value::Z64(v) => Variant::from(v),
+            Value::U64(v) | Value::V64(v) => Variant::from(v),
+            Value::F32(v) => Variant::from(v),
+            Value::F64(v) => Variant::from(v),
+            Value::True => Variant::from(true),
+            Value::False => Variant::from(false),
+            Value::String(s) => Variant::from(&*s),
+            Value::Bytes(_) => Variant::from("#BIN"),
+            Value::Null => Variant::null(),
+            Value::Ok => Variant::from("OK"),
+            Value::Error(e) => Variant::from(&format!("#ERR {}", &*e)),
+            Value::Array(_) => Variant::from("#ARRAY"), // CR estokes: implement this
+            Value::DateTime(d) => Variant::from(&d.to_string()),
+            Value::Duration(d) => Variant::from(&format!("{}s", d.as_secs_f64())),
+        },
+    }
 }
-*/
 
 unsafe fn dispatch_refresh_data(
     server: &Server,
     params: *mut DISPPARAMS,
-    result: &mut VariantRef,
+    result: &mut Variant,
 ) -> Result<()> {
     let params = Params::new(params)?;
     if params.len() != 1 {
         bail!("refresh_data unexpected number of params")
     }
-    let ntopics = params.get(0);
+    let ntopics = params.get_mut(0);
+    let ntopics: &mut i32 = ntopics.try_into()?;
     let mut updates = server.refresh_data();
     let len = updates.len();
-    *ntopics.get_byref_i32()? = len as i32;
-    let array = VariantVector2D::alloc(len, 2);
-    let mut var_: VARIANT = mem::zeroed();
-    VariantInit(&mut var_);
-    let mut var = VariantRef::new(&mut var_);
-    for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
-        var.set_i32(tid);
-        array.put(0, i, var);
-        match e {
-            Event::Unsubscribed => var.set_string("#SUB"),
-            Event::Update(v) => match v {
-                Value::I32(v) | Value::Z32(v) => var.set_i32(v),
-                Value::U32(v) | Value::V32(v) => var.set_u32(v),
-                Value::I64(v) | Value::Z64(v) => var.set_i64(v),
-                Value::U64(v) | Value::V64(v) => var.set_u64(v),
-                Value::F32(v) => var.set_f32(v),
-                Value::F64(v) => var.set_f64(v),
-                Value::True => var.set_bool(true),
-                Value::False => var.set_bool(false),
-                Value::String(s) => var.set_string(&*s),
-                Value::Bytes(_) => var.set_string("#BIN"),
-                Value::Null => var.set_null(),
-                Value::Ok => var.set_string("OK"),
-                Value::Error(e) => var.set_string(&format!("#ERR {}", &*e)),
-                Value::Array(_) => var.set_string("#ARRAY"), // CR estokes: implement this?
-                Value::DateTime(d) => var.set_string(&d.to_string()),
-                Value::Duration(d) => var.set_string(&format!("{}s", d.as_secs_f64())),
-            },
+    *ntopics = len as i32;
+    let mut array = SafeArray::new(&[
+        SAFEARRAYBOUND { lLbound: 0, cElements: 2 },
+        SAFEARRAYBOUND { lLbound: 0, cElements: len as u32 },
+    ]);
+    {
+        let wh = array.write()?;
+        for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
+            *wh.get_mut(&[0, i as i32])? = Variant::from(tid);
+            *wh.get_mut(&[1, i as i32])? = variant_of_event(e);
         }
-        array.put(1, i, var);
     }
-    var.clear();
-    result.set_safearray(array.0);
+    *result = Variant::from(array);
     Ok(())
 }
 
@@ -276,7 +279,7 @@ unsafe fn dispatch_disconnect_data(
     if params.len() != 1 {
         bail!("wrong number of args")
     }
-    let topic_id = TopicId(params.get(0).get_i32()?);
+    let topic_id = TopicId(params.get(0).try_into()?);
     Ok(server.disconnect_data(topic_id))
 }
 
@@ -344,56 +347,56 @@ com::class! {
                 id, iid, lcid, flags, params, result, exception, arg_error
             );
             assert!(!params.is_null());
-            let mut result = VariantRef::new(result);
+            let result = Variant::ref_from_raw_mut(result);
             match id {
                 0 => {
                     debug!("ServerStart");
                     match dispatch_server_start(&self.server, params) {
-                        Ok(()) => result.set_i32(1),
+                        Ok(()) => { *result = Variant::from(1); },
                         Err(e) => {
                             error!("server_start invalid arg {}", e);
-                            result.set_error()
+                            *result = Variant::error();
                         }
                     }
                },
                 1 => {
                     debug!("ServerTerminate");
                     self.server.server_terminate();
-                    result.set_null();
+                    *result = Variant::from(1);
                 },
                 2 => {
                     debug!("ConnectData");
                     match dispatch_connect_data(&self.server, params) {
-                        Ok(()) => result.set_i32(1),
+                        Ok(()) => { *result = Variant::from(1); },
                         Err(e) => {
                             error!("connect_data invalid arg {}", e);
-                            result.set_error();
+                            *result = Variant::error();
                         }
                     }
                 },
                 3 => {
                     debug!("RefreshData");
-                    match dispatch_refresh_data(&self.server, params, &mut result) {
+                    match dispatch_refresh_data(&self.server, params, result) {
                         Ok(()) => (),
                         Err(e) => {
                             error!("refresh_data failed {}", e);
-                            result.set_error()
+                            *result = Variant::error();
                         }
                     }
                 },
                 4 => {
                     debug!("DisconnectData");
                     match dispatch_disconnect_data(&self.server, params) {
-                        Ok(()) => result.set_i32(1),
+                        Ok(()) => { *result = Variant::from(1); } 
                         Err(e) => {
                             error!("disconnect_data invalid arg {}", e);
-                            result.set_error()
+                            *result = Variant::error()
                         }
                     }
                 },
                 5 => {
                     debug!("Heartbeat");
-                    result.set_i32(1);
+                    *result = Variant::from(1);
                 },
                 _ => {
                     debug!("unknown method {} called", id)
