@@ -1,30 +1,27 @@
 use crate::{
-    comglue::interface::{IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH},
+    comglue::{
+        interface::{IDispatch, IRTDServer, IRTDUpdateEvent, IID_IDISPATCH},
+        variant::{str_to_wstr, string_from_wstr, SafeArray, Variant},
+    },
     server::{Server, TopicId},
 };
 use anyhow::{anyhow, bail, Result};
 use arcstr::ArcStr;
 use com::sys::{HRESULT, IID, NOERROR};
 use log::{debug, error, LevelFilter};
-use netidx::{path::Path, subscriber::{Event, Value}};
+use netidx::{
+    path::Path,
+    subscriber::{Event, Value},
+};
 use once_cell::sync::Lazy;
 use simplelog;
 use std::{
-    boxed::Box,
-    ffi::{c_void, OsString},
-    fs::File,
-    mem,
-    os::windows::ffi::{OsStrExt, OsStringExt},
-    ptr,
-    sync::mpsc,
-    thread,
-    time::Duration,
+    boxed::Box, ffi::c_void, fs::File, mem, ptr, sync::mpsc, thread, time::Duration,
 };
 use windows::{
     core::{Abi, GUID},
     Win32::{
         Foundation::{SysAllocStringLen, PWSTR},
-        Globalization::lstrlenW,
         System::{
             Com::{
                 self, CoInitialize, CoUninitialize, IStream, ITypeInfo,
@@ -175,184 +172,6 @@ impl IRTDUpdateEventWrap {
     }
 }
 
-struct VariantVector(*mut SAFEARRAY);
-
-impl VariantVector {
-    fn new(p: *mut SAFEARRAY) -> Self {
-        VariantVector(p)
-    }
-
-    unsafe fn len(&self) -> usize {
-        let lbound = SafeArrayGetLBound(self.0, 1).unwrap();
-        let ubound = SafeArrayGetUBound(self.0, 1).unwrap();
-        (1 + ubound - lbound) as usize
-    }
-
-    unsafe fn get(&self, i: isize) -> VariantRef {
-        VariantRef::new((*self.0).pvData.cast::<VARIANT>().offset(i))
-    }
-}
-
-struct VariantVector2D(*mut SAFEARRAY);
-
-impl VariantVector2D {
-    unsafe fn alloc(rows: usize, cols: usize) -> VariantVector2D {
-        let dims = [
-            SAFEARRAYBOUND { cElements: cols as u32, lLbound: 0 },
-            SAFEARRAYBOUND { cElements: rows as u32, lLbound: 0 },
-        ];
-        VariantVector2D(SafeArrayCreate(Ole::VT_VARIANT.0 as u16, 2, dims.as_ptr()))
-    }
-
-    unsafe fn put(&self, col: usize, row: usize, val: VariantRef) {
-        let idx = [col as i32, row as i32];
-        if let Err(e) = SafeArrayPutElement(self.0, idx.as_ptr(), val.0 as *mut c_void) {
-            error!("failed to put element in VariantVector2D {}", e)
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct VariantRef(*mut VARIANT);
-
-impl VariantRef {
-    fn new(p: *mut VARIANT) -> Self {
-        VariantRef(p)
-    }
-
-    unsafe fn clear(&self) {
-        let _ = VariantClear(self.0);
-    }
-
-    unsafe fn typ(&self) -> u16 {
-        (*self.0).Anonymous.Anonymous.vt
-    }
-
-    unsafe fn set_typ(&mut self, typ: Ole::VARENUM) {
-        (*(*self.0).Anonymous.Anonymous).vt = typ.0 as u16;
-    }
-
-    unsafe fn val(&self) -> &VARIANT_0_0_0 {
-        &(*self.0).Anonymous.Anonymous.Anonymous
-    }
-
-    unsafe fn val_mut(&mut self) -> &mut VARIANT_0_0_0 {
-        &mut (*(*self.0).Anonymous.Anonymous).Anonymous
-    }
-
-    unsafe fn set_bool(&mut self, v: bool) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_BOOL);
-        self.val_mut().boolVal = if v { -1 } else { 0 };
-    }
-
-    unsafe fn set_null(&mut self) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_NULL);
-    }
-
-    unsafe fn set_error(&mut self) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_ERROR);
-    }
-
-    unsafe fn set_i32(&mut self, v: i32) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_I4);
-        self.val_mut().lVal = v;
-    }
-
-    unsafe fn set_u32(&mut self, v: u32) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_UI4);
-        self.val_mut().ulVal = v;
-    }
-
-    unsafe fn set_i64(&mut self, v: i64) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_I8);
-        self.val_mut().llVal = v;
-    }
-
-    unsafe fn set_u64(&mut self, v: u64) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_UI8);
-        self.val_mut().ullVal = v;
-    }
-
-    unsafe fn set_f32(&mut self, v: f32) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_R4);
-        self.val_mut().fltVal = v;
-    }
-
-    unsafe fn set_f64(&mut self, v: f64) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_R8);
-        self.val_mut().dblVal = v;
-    }
-
-    unsafe fn set_string(&mut self, v: &str) {
-        let _ = VariantClear(self.0);
-        self.set_typ(Ole::VT_BSTR);
-        let mut s = str_to_wstr(v);
-        let bs = SysAllocStringLen(PWSTR(s.as_mut_ptr()), s.len() as u32);
-        self.val_mut().bstrVal = mem::ManuallyDrop::new(bs);
-    }
-
-    unsafe fn set_safearray(&mut self, v: *mut SAFEARRAY) {
-        VariantInit(self.0);
-        self.set_typ(Ole::VARENUM(Ole::VT_ARRAY.0 | Ole::VT_VARIANT.0));
-        self.val_mut().parray = v;
-    }
-
-    unsafe fn get_i32(&self) -> Result<i32> {
-        if self.typ() == Ole::VT_I4.0 as u16 {
-            Ok(self.val().lVal)
-        } else {
-            bail!("not a long value")
-        }
-    }
-
-    unsafe fn get_byref_i32(&self) -> Result<*mut i32> {
-        if self.typ() == (Ole::VT_I4.0 | Ole::VT_BYREF.0) as u16 {
-            Ok(self.val().plVal)
-        } else {
-            bail!("not a byref long value")
-        }
-    }
-
-    unsafe fn get_path(&self) -> Result<Path> {
-        if self.typ() == Ole::VT_BSTR.0 as u16 {
-            let path = &self.val().bstrVal;
-            let path = string_from_wstr(path.0);
-            Ok(Path::from(ArcStr::from(&*path.to_string_lossy())))
-        } else {
-            bail!("not a string value")
-        }
-    }
-
-    unsafe fn get_variant_vector(&self) -> Result<VariantVector> {
-        if self.typ() == (Ole::VT_ARRAY.0 | Ole::VT_VARIANT.0) as u16 {
-            Ok(VariantVector::new(self.val().parray))
-        } else {
-            bail!("not a variant array")
-        }
-    }
-
-    unsafe fn get_irtd_update_event(&self) -> Result<IRTDUpdateEventWrap> {
-        if self.typ() == Ole::VT_DISPATCH.0 as u16 {
-            debug!("from abi on interface");
-            let disp = Com::IDispatch::from_abi(self.val().pdispVal)
-                .map_err(|e| anyhow!(e.to_string()))?;
-            debug!("wrapping interface");
-            Ok(IRTDUpdateEventWrap::new(disp)?)
-        } else {
-            bail!("not an update event interface")
-        }
-    }
-}
-
 struct Params(*mut DISPPARAMS);
 
 impl Params {
@@ -367,15 +186,14 @@ impl Params {
         (*self.0).cArgs as usize
     }
 
-    unsafe fn get(&self, i: isize) -> VariantRef {
-        VariantRef::new((*self.0).rgvarg.offset(i))
+    unsafe fn get(&self, i: usize) -> &Variant {
+        Variant::ref_from_raw((*self.0).rgvarg.offset(i as isize))
     }
 }
 
 unsafe fn dispatch_server_start(server: &Server, params: *mut DISPPARAMS) -> Result<()> {
     let params = Params::new(params)?;
-    let updates = params.get(0).get_irtd_update_event()?;
-    server.server_start(updates);
+    server.server_start(IRTDUpdateEventWrap::new(params.get(0).try_into()?)?);
     Ok(())
 }
 
@@ -384,8 +202,8 @@ unsafe fn dispatch_connect_data(server: &Server, params: *mut DISPPARAMS) -> Res
     if params.len() != 3 {
         bail!("wrong number of args")
     }
-    let topic_id = TopicId(params.get(2).get_i32()?);
-    let topics = params.get(1).get_variant_vector()?;
+    let topic_id = TopicId(params.get(2).try_into()?);
+    let topics: &SafeArray = params.get(1).try_into()?;
     if topics.len() == 0 {
         bail!("not enough topics")
     }
