@@ -3,6 +3,7 @@ use std::{
     convert::{From, TryInto},
     default::Default,
     ffi::{c_void, OsString},
+    iter::{ExactSizeIterator, Iterator},
     mem,
     ops::{Deref, DerefMut, Drop},
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -16,11 +17,12 @@ use windows::{
         System::{
             Com::{IDispatch, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0},
             Ole::{
-                SafeArrayCreate, SafeArrayDestroy, SafeArrayGetDim,
-                SafeArrayGetElement, SafeArrayGetLBound, SafeArrayGetUBound,
-                SafeArrayGetVartype, SafeArrayPutElement, VariantClear, VariantInit,
-                VARENUM, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_ERROR, VT_I4, VT_I8,
-                VT_NULL, VT_R4, VT_R8, VT_UI4, VT_UI8, VT_VARIANT, VT_ARRAY
+                SafeArrayCreate, SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement,
+                SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayGetVartype,
+                SafeArrayLock, SafeArrayPtrOfIndex, SafeArrayPutElement, SafeArrayUnlock,
+                VariantClear, VariantInit, VARENUM, VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF,
+                VT_DISPATCH, VT_ERROR, VT_I4, VT_I8, VT_NULL, VT_R4, VT_R8, VT_UI4,
+                VT_UI8, VT_VARIANT,
             },
         },
     },
@@ -128,18 +130,6 @@ impl<'a> TryInto<IDispatch> for &'a Variant {
     }
 }
 
-impl<'a> TryInto<&'a SafeArray> for &'a Variant {
-    type Error = Error;
-
-    fn try_into(self) -> Result<&'a SafeArray, Self::Error> {
-        if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
-            bail!("not a variant safearray")
-        } else {
-            Ok(unsafe { SafeArray::from_raw(self.val().parray)? })
-        }
-    }
-}
-
 impl<'a> TryInto<&'a mut SafeArray> for &'a mut Variant {
     type Error = Error;
 
@@ -147,7 +137,7 @@ impl<'a> TryInto<&'a mut SafeArray> for &'a mut Variant {
         if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
             bail!("not a variant safearray")
         } else {
-            Ok(unsafe { SafeArray::from_raw_mut(self.val().parray)? })
+            Ok(unsafe { SafeArray::ref_from_raw(self.val().parray)? })
         }
     }
 }
@@ -249,7 +239,7 @@ impl From<SafeArray> for Variant {
             v.set_typ(VARENUM(VT_ARRAY.0 | VT_VARIANT.0));
             v.val_mut().parray = a.0;
             // the variant is now responsible for deallocating the safe array
-            mem::forget(a); 
+            mem::forget(a);
             v
         }
     }
@@ -274,13 +264,13 @@ impl Variant {
 
     // turn a const pointer to a `VARIANT` into a reference to a `Variant`.
     // take care to assign a reasonable lifetime.
-    pub unsafe fn from_raw<'a>(p: *const VARIANT) -> &'a Variant {
+    pub unsafe fn ref_from_raw<'a>(p: *const VARIANT) -> &'a Variant {
         mem::transmute::<&'a VARIANT, &'a Variant>(&*p)
     }
 
     // turn a mut pointer to a `VARIANT` into a mutable reference to a `Variant`.
     // take care to assign a reasonable lifetime.
-    pub unsafe fn from_raw_mut<'a>(p: *mut VARIANT) -> &'a mut Variant {
+    pub unsafe fn ref_from_raw_mut<'a>(p: *mut VARIANT) -> &'a mut Variant {
         mem::transmute::<&'a mut VARIANT, &'a mut Variant>(&mut *p)
     }
 
@@ -299,14 +289,163 @@ impl Variant {
     unsafe fn val_mut(&mut self) -> &mut VARIANT_0_0_0 {
         &mut (*self.0.Anonymous.Anonymous).Anonymous
     }
+}
 
-    /*
-    fn set_safearray(&mut self, v: *mut SAFEARRAY) {
-        VariantInit(self.0);
-        self.set_typ(Ole::VARENUM(Ole::VT_ARRAY.0 | Ole::VT_VARIANT.0));
-        self.val_mut().parray = v;
+fn next_index(bounds: &[SAFEARRAYBOUND], idx: &mut [i32]) -> bool {
+    let mut i = 0;
+    while i < bounds.len() {
+        if idx[i] < (bounds[i].lLbound + bounds[i].cElements as i32) {
+            idx[i] += 1;
+            for j in 0..i {
+                idx[j] = bounds[j].lLbound;
+            }
+            break;
+        }
+        i += 1;
     }
-    */
+    i < bounds.len()
+}
+
+pub struct SafeArrayIterMut<'a> {
+    array: &'a mut SafeArrayGuard<'a>,
+    bounds: Vec<SAFEARRAYBOUND>,
+    idx: Vec<i32>,
+}
+
+impl<'a> Iterator for SafeArrayIterMut<'a> {
+    type Item = &'a mut Variant;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !next_index(&self.bounds, &mut self.idx) {
+            None
+        } else {
+            unsafe {
+                let mut vp: *mut VARIANT = ptr::null_mut();
+                match SafeArrayPtrOfIndex(
+                    self.array.0 .0,
+                    self.idx.as_ptr(),
+                    &mut vp as *mut *mut VARIANT as *mut *mut c_void,
+                ) {
+                    Ok(()) => Some(Variant::ref_from_raw_mut(vp)),
+                    Err(_) => None,
+                }
+            }
+        }
+    }
+}
+
+pub struct SafeArrayIter<'a> {
+    array: &'a SafeArrayGuard<'a>,
+    bounds: Vec<SAFEARRAYBOUND>,
+    idx: Vec<i32>,
+}
+
+impl<'a> Iterator for SafeArrayIter<'a> {
+    type Item = &'a Variant;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !next_index(&self.bounds, &mut self.idx) {
+            None
+        } else {
+            unsafe {
+                let mut vp: *mut VARIANT = ptr::null_mut();
+                match SafeArrayPtrOfIndex(
+                    self.array.0 .0,
+                    self.idx.as_ptr(),
+                    &mut vp as *mut *mut VARIANT as *mut *mut c_void,
+                ) {
+                    Ok(()) => Some(Variant::ref_from_raw(vp)),
+                    Err(_) => None,
+                }
+            }
+        }
+    }
+}
+
+pub struct SafeArrayGuard<'a>(&'a mut SafeArray);
+
+impl<'a> Drop for SafeArrayGuard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SafeArrayUnlock(self.0 .0);
+        }
+    }
+}
+
+impl<'a> SafeArrayGuard<'a> {
+    pub fn dims(&self) -> u32 {
+        unsafe { SafeArrayGetDim(self.0 .0) }
+    }
+
+    pub fn bound(&self, dim: u32) -> Result<SAFEARRAYBOUND> {
+        unsafe {
+            let lbound = SafeArrayGetLBound(self.0 .0, dim).map_err(|e| {
+                anyhow!("couldn't get safe array lower bound {}", e.to_string())
+            })?;
+            let ubound = SafeArrayGetUBound(self.0 .0, dim).map_err(|e| {
+                anyhow!("couldn't get safe array upper bound {}", e.to_string())
+            })?;
+            Ok(SAFEARRAYBOUND {
+                cElements: (1 + ubound - lbound) as u32,
+                lLbound: lbound,
+            })
+        }
+    }
+
+    pub fn bounds(&self) -> Result<Vec<SAFEARRAYBOUND>> {
+        let dims = self.dims();
+        let mut res = Vec::with_capacity(dims as usize);
+        for i in 0..dims {
+            res.push(self.bound(i)?)
+        }
+        Ok(res)
+    }
+
+    fn iter(&self) -> Result<SafeArrayIter> {
+        let bounds = self.bounds()?;
+        Ok(SafeArrayIter {
+            array: self,
+            bounds,
+            idx: (0..bounds.len()).into_iter().map(|_| 0).collect()
+        })
+    }
+
+    fn iter_mut(&'a mut self) -> Result<SafeArrayIterMut<'a>> {
+        let bounds = self.bounds()?;
+        Ok(SafeArrayIterMut {
+            array: self,
+            bounds,
+            idx: (0..bounds.len()).into_iter().map(|_| 0).collect()
+        })
+    }
+
+    fn get(&self, idx: &[i32]) -> Result<&Variant> {
+        unsafe {
+            let mut vp: *mut VARIANT = ptr::null_mut();
+            match SafeArrayPtrOfIndex(
+                self.0 .0,
+                idx.as_ptr(),
+                &mut vp as *mut *mut VARIANT as *mut *mut c_void,
+            ) {
+                Ok(()) => Ok(Variant::ref_from_raw(vp)),
+                Err(e) => bail!("could not access idx: {:?}, {}", idx, e.to_string()),
+            }
+        }
+    }
+
+    fn get_mut(&mut self, idx: &[i32]) -> Result<&mut Variant> {
+        unsafe {
+            let mut vp: *mut VARIANT = ptr::null_mut();
+            match SafeArrayPtrOfIndex(
+                self.0 .0,
+                idx.as_ptr(),
+                &mut vp as *mut *mut VARIANT as *mut *mut c_void,
+            ) {
+                Ok(()) => Ok(Variant::ref_from_raw_mut(vp)),
+                Err(e) => bail!("could not access idx: {:?}, {}", idx, e.to_string()),
+            }
+        }
+    }
 }
 
 #[repr(transparent)]
@@ -328,66 +467,20 @@ impl SafeArray {
         SafeArray(t)
     }
 
-    unsafe fn check_ptr(p: *const SAFEARRAY) -> Result<()> {
+    pub unsafe fn ref_from_raw<'a>(p: *mut SAFEARRAY) -> Result<&'a mut Self> {
         let typ = SafeArrayGetVartype(p)
             .map_err(|e| anyhow!("couldn't get safearray type {}", e.to_string()))?;
         if typ != VT_VARIANT.0 as u16 {
             bail!("not a variant array")
         }
-        Ok(())
-    }
-
-    pub unsafe fn from_raw<'a>(p: *const SAFEARRAY) -> Result<&'a Self> {
-        Self::check_ptr(p)?;
-        Ok(mem::transmute::<&SAFEARRAY, &SafeArray>(&*p))
-    }
-
-    pub unsafe fn from_raw_mut<'a>(p: *mut SAFEARRAY) -> Result<&'a mut Self> {
-        Self::check_ptr(p)?;
         Ok(mem::transmute::<&mut SAFEARRAY, &mut SafeArray>(&mut *p))
     }
 
-    pub fn dims(&self) -> u32 {
-        unsafe { SafeArrayGetDim(self.0) }
-    }
-
-    pub fn bound(&self, dim: u32) -> Result<SAFEARRAYBOUND> {
+    pub fn lock<'a>(&'a mut self) -> Result<SafeArrayGuard<'a>> {
         unsafe {
-            let lbound = SafeArrayGetLBound(self.0, dim).map_err(|e| {
-                anyhow!("couldn't get safe array lower bound {}", e.to_string())
-            })?;
-            let ubound = SafeArrayGetUBound(self.0, dim).map_err(|e| {
-                anyhow!("couldn't get safe array upper bound {}", e.to_string())
-            })?;
-            Ok(SAFEARRAYBOUND {
-                cElements: (1 + ubound - lbound) as u32,
-                lLbound: lbound,
-            })
-        }
-    }
-
-    fn get(&self, idx: &[i32]) -> Result<Variant> {
-        unsafe {
-            let mut res = Variant::new();
-            SafeArrayGetElement(
-                self.0,
-                idx.as_ptr(),
-                &mut res as *mut Variant as *mut c_void,
-            )
-            .map_err(|e| anyhow!("failed to get safe array element {}", e.to_string()))?;
-            Ok(res)
-        }
-    }
-
-    fn set(&mut self, idx: &[i32], v: &Variant) -> Result<()> {
-        unsafe {
-            SafeArrayPutElement(
-                self.0,
-                idx.as_ptr(),
-                v as *const Variant as *const c_void,
-            )
-            .map_err(|e| anyhow!("failed to set safearray element {}", e.to_string()))?;
-            Ok(())
+            SafeArrayLock(self.0)
+                .map_err(|e| anyhow!("failed to lock safearray {}", e.to_string()))?;
+            Ok(SafeArrayGuard(self))
         }
     }
 }
