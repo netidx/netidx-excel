@@ -6,7 +6,6 @@ use crate::{
     server::{Server, TopicId},
 };
 use anyhow::{anyhow, bail, Result};
-use arcstr::ArcStr;
 use com::sys::{HRESULT, IID, NOERROR};
 use log::{debug, error, LevelFilter};
 use netidx::{
@@ -15,24 +14,19 @@ use netidx::{
 };
 use once_cell::sync::Lazy;
 use simplelog;
-use std::{
-    boxed::Box, ffi::c_void, fs::File, mem, ptr, sync::mpsc, thread, time::Duration,
-};
+use std::{boxed::Box, ffi::c_void, fs::File, ptr, sync::mpsc, thread, time::Duration};
 use windows::{
-    core::{Abi, GUID},
+    core::GUID,
     Win32::{
-        Foundation::{SysAllocStringLen, PWSTR},
+        Foundation::PWSTR,
         System::{
             Com::{
                 self, CoInitialize, CoUninitialize, IStream, ITypeInfo,
                 Marshal::CoMarshalInterThreadInterfaceInStream,
                 StructuredStorage::CoGetInterfaceAndReleaseStream, DISPPARAMS, EXCEPINFO,
-                SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0,
+                SAFEARRAY, SAFEARRAYBOUND, VARIANT,
             },
-            Ole::{
-                self, SafeArrayCreate, SafeArrayGetLBound, SafeArrayGetUBound,
-                SafeArrayPutElement, VariantClear, VariantInit,
-            },
+            Ole,
             Threading::{CreateThread, THREAD_CREATION_FLAGS},
         },
     },
@@ -261,7 +255,7 @@ unsafe fn dispatch_refresh_data(
         SAFEARRAYBOUND { lLbound: 0, cElements: len as u32 },
     ]);
     {
-        let wh = array.write()?;
+        let mut wh = array.write()?;
         for (i, (TopicId(tid), e)) in updates.drain().enumerate() {
             *wh.get_mut(&[0, i as i32])? = Variant::from(tid);
             *wh.get_mut(&[1, i as i32])? = variant_of_event(e);
@@ -387,7 +381,7 @@ com::class! {
                 4 => {
                     debug!("DisconnectData");
                     match dispatch_disconnect_data(&self.server, params) {
-                        Ok(()) => { *result = Variant::from(1); } 
+                        Ok(()) => { *result = Variant::from(1); }
                         Err(e) => {
                             error!("disconnect_data invalid arg {}", e);
                             *result = Variant::error()

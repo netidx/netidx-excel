@@ -17,12 +17,11 @@ use windows::{
         System::{
             Com::{IDispatch, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0},
             Ole::{
-                SafeArrayCreate, SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetElement,
-                SafeArrayGetLBound, SafeArrayGetUBound, SafeArrayGetVartype,
-                SafeArrayLock, SafeArrayPtrOfIndex, SafeArrayPutElement, SafeArrayUnlock,
-                VariantClear, VariantInit, VARENUM, VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF,
-                VT_DISPATCH, VT_ERROR, VT_I4, VT_I8, VT_NULL, VT_R4, VT_R8, VT_UI4,
-                VT_UI8, VT_VARIANT,
+                SafeArrayCreate, SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetLBound,
+                SafeArrayGetUBound, SafeArrayGetVartype, SafeArrayLock,
+                SafeArrayPtrOfIndex, SafeArrayUnlock, VariantClear, VariantInit, VARENUM,
+                VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_ERROR, VT_I4,
+                VT_I8, VT_NULL, VT_R4, VT_R8, VT_UI4, VT_UI8, VT_VARIANT,
             },
         },
     },
@@ -108,7 +107,7 @@ impl<'a> TryInto<String> for &'a Variant {
             bail!("not a string")
         } else {
             unsafe {
-                let s = *self.val().bstrVal;
+                let s = &*self.val().bstrVal;
                 Ok(string_from_wstr(s.0).to_string_lossy().to_string())
             }
         }
@@ -419,10 +418,11 @@ impl<'a> SafeArrayReadGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
+        let len = bounds.len();
         Ok(SafeArrayIter {
             array: self.0,
             bounds,
-            idx: (0..bounds.len()).into_iter().map(|_| 0).collect(),
+            idx: (0..len).into_iter().map(|_| 0).collect(),
         })
     }
 
@@ -456,19 +456,21 @@ impl<'a> SafeArrayWriteGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
+        let len = bounds.len();
         Ok(SafeArrayIter {
             array: self.0,
             bounds,
-            idx: (0..bounds.len()).into_iter().map(|_| 0).collect(),
+            idx: (0..len).into_iter().map(|_| 0).collect(),
         })
     }
 
     pub fn iter_mut(&mut self) -> Result<SafeArrayIterMut> {
         let bounds = self.bounds()?;
+        let len = bounds.len();
         Ok(SafeArrayIterMut {
             array: self.0,
             bounds,
-            idx: (0..bounds.len()).into_iter().map(|_| 0).collect(),
+            idx: (0..len).into_iter().map(|_| 0).collect(),
         })
     }
 
@@ -476,7 +478,7 @@ impl<'a> SafeArrayWriteGuard<'a> {
         self.0.get(idx)
     }
 
-    pub fn get_mut(&self, idx: &[i32]) -> Result<&mut Variant> {
+    pub fn get_mut(&mut self, idx: &[i32]) -> Result<&mut Variant> {
         self.0.get_mut(idx)
     }
 }
@@ -534,7 +536,7 @@ impl SafeArray {
             Ok(SafeArrayReadGuard(self))
         }
     }
-    
+
     fn dims(&self) -> u32 {
         unsafe { SafeArrayGetDim(self.0) }
     }
