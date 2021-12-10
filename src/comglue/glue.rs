@@ -35,7 +35,7 @@ use windows::{
 static LOGGER: Lazy<()> = Lazy::new(|| {
     let f = File::create("C:\\Users\\eric\\proj\\netidx-excel\\log.txt")
         .expect("couldn't open log file");
-    simplelog::WriteLogger::init(LevelFilter::Debug, simplelog::Config::default(), f)
+    simplelog::WriteLogger::init(LevelFilter::Warn, simplelog::Config::default(), f)
         .expect("couldn't init log")
 });
 
@@ -230,19 +230,7 @@ fn variant_of_value(v: &Value) -> Variant {
         Value::Null => Variant::null(),
         Value::Ok => Variant::from("OK"),
         Value::Error(e) => Variant::from(&format!("#ERR {}", &**e)),
-        Value::Array(a) => {
-            let mut sa = SafeArray::new(&[SAFEARRAYBOUND {
-                lLbound: 0,
-                cElements: a.len() as u32,
-            }]);
-            {
-                let mut wh = sa.write().unwrap();
-                for (i, v) in a.iter().enumerate() {
-                    *wh.get_mut(&[i as i32]).unwrap() = variant_of_value(v);
-                }
-            }
-            Variant::from(sa)
-        }
+        Value::Array(_) => Variant::from(&format!("{}", v)),
         Value::DateTime(d) => Variant::from(&d.to_string()),
         Value::Duration(d) => Variant::from(&format!("{}s", d.as_secs_f64())),
     }
