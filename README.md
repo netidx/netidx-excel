@@ -29,7 +29,9 @@ Even if you subscribe to a lot of data, or you subscribe to data that updates qu
 
 # Building
 
-You need a windows machine (obviously) probably windows 10 or above, but 8 might work. You need to install rust, the easiest way is to use rustup. You need to install git. Once you have those two things installed,
+There are pre built binaries [here](https://github.com/estokes/netidx-excel/releases/tag/0.1.0)
+
+But you want to build it you need a windows machine (obviously) probably windows 10 or above, but 8 might work. You need to install rust, the easiest way is to use rustup. You need to install git. Once you have those two things installed,
 
 ```bash
 > git clone https://github.com/estokes/netidx-excel
