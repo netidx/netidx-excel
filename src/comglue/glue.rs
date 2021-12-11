@@ -94,9 +94,21 @@ fn variant_of_value(v: &Value) -> Variant {
         Value::Null => Variant::null(),
         Value::Ok => Variant::from("OK"),
         Value::Error(e) => Variant::from(&format!("#ERR {}", &**e)),
-        Value::Array(_) => Variant::from(&format!("{}", v)),
         Value::DateTime(d) => Variant::from(&d.to_string()),
         Value::Duration(d) => Variant::from(&format!("{}s", d.as_secs_f64())),
+        Value::Array(_) => Variant::from(&format!("{}", v)),
+        /* sadly this doesn't work {
+            let mut res = SafeArray::new(&[
+                SAFEARRAYBOUND { lLbound: 0, cElements: a.len() as u32 },
+            ]);
+            {
+                let mut res = res.write().unwrap();
+                for (i, v) in a.iter().enumerate() {
+                    *res.get_mut(&[i as i32]).unwrap() = variant_of_value(v);
+                }
+            }
+            Variant::from(res)
+        }*/
     }
 }
 
