@@ -1,6 +1,6 @@
 This is an Excel COM add-in that allows the `=RTD()` formula to pull in real time data from Netidx.
 
-E.G. You have published some data, e.gl from the shell publisher, and you want to show it to your boss, but "that commandline thing" or "that linux thing" is not something your boss does.
+Say you have published some data, maybe from the shell publisher, and you want to show it to your boss, but "that commandline thing" or "that linux thing" is not something your boss does.
 ```bash
 > netidx publisher --bind 192.168.0.0/24 --spn publish/ryouko.ryu-oh.org@RYU-OH.ORG
 /test/foo|array|[42, -42]
