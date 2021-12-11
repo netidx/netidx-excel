@@ -129,14 +129,32 @@ impl<'a> TryInto<IDispatch> for &'a Variant {
     }
 }
 
-impl<'a> TryInto<SafeArray> for &'a Variant {
+impl<'a> TryInto<&'a SafeArray> for &'a Variant {
     type Error = Error;
 
-    fn try_into(self) -> Result<SafeArray, Self::Error> {
+    fn try_into(self) -> Result<&'a SafeArray, Self::Error> {
         if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
             bail!("not a variant safearray")
         } else {
-            Ok(unsafe { SafeArray::from_raw(self.val().parray)? })
+            Ok(unsafe {
+                mem::transmute::<&*mut SAFEARRAY, &SafeArray>(&self.val().parray)
+            })
+        }
+    }
+}
+
+impl<'a> TryInto<&'a mut SafeArray> for &'a mut Variant {
+    type Error = Error;
+
+    fn try_into(self) -> Result<&'a mut SafeArray, Self::Error> {
+        if self.typ() != VARENUM(VT_ARRAY.0 | VT_VARIANT.0) {
+            bail!("not a variant safearray")
+        } else {
+            Ok(unsafe {
+                mem::transmute::<&mut *mut SAFEARRAY, &mut SafeArray>(
+                    &mut self.val_mut().parray,
+                )
+            })
         }
     }
 }
@@ -345,7 +363,8 @@ impl<'a> Iterator for SafeArrayIterMut<'a> {
                     self.array.0,
                     self.idx.as_ptr(),
                     &mut vp as *mut *mut VARIANT as *mut *mut c_void,
-                ).ok()?;
+                )
+                .ok()?;
                 Some(Variant::ref_from_raw_mut(vp))
             };
             self.end = next_index(&self.bounds, &mut self.idx);
@@ -358,7 +377,7 @@ pub struct SafeArrayIter<'a> {
     array: &'a SafeArray,
     bounds: Vec<SAFEARRAYBOUND>,
     idx: Vec<i32>,
-    end: bool
+    end: bool,
 }
 
 impl<'a> Iterator for SafeArrayIter<'a> {
@@ -374,7 +393,8 @@ impl<'a> Iterator for SafeArrayIter<'a> {
                     self.array.0,
                     self.idx.as_ptr(),
                     &mut vp as *mut *mut VARIANT as *mut *mut c_void,
-                ).ok()?;
+                )
+                .ok()?;
                 Some(Variant::ref_from_raw(vp))
             };
             self.end = next_index(&self.bounds, &mut self.idx);
@@ -408,13 +428,9 @@ impl<'a> SafeArrayReadGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
-        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
-        Ok(SafeArrayIter {
-            array: self.0,
-            bounds,
-            idx,
-            end: false,
-        })
+        let idx =
+            (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
+        Ok(SafeArrayIter { array: self.0, bounds, idx, end: false })
     }
 
     pub fn get(&self, idx: &[i32]) -> Result<&Variant> {
@@ -447,24 +463,16 @@ impl<'a> SafeArrayWriteGuard<'a> {
 
     pub fn iter(&self) -> Result<SafeArrayIter> {
         let bounds = self.bounds()?;
-        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
-        Ok(SafeArrayIter {
-            array: self.0,
-            bounds,
-            idx,
-            end: false
-        })
+        let idx =
+            (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
+        Ok(SafeArrayIter { array: self.0, bounds, idx, end: false })
     }
 
     pub fn iter_mut(&mut self) -> Result<SafeArrayIterMut> {
         let bounds = self.bounds()?;
-        let idx = (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
-        Ok(SafeArrayIterMut {
-            array: self.0,
-            bounds,
-            idx,
-            end: false
-        })
+        let idx =
+            (0..bounds.len()).into_iter().map(|i| bounds[i].lLbound).collect::<Vec<_>>();
+        Ok(SafeArrayIterMut { array: self.0, bounds, idx, end: false })
     }
 
     pub fn get(&self, idx: &[i32]) -> Result<&Variant> {

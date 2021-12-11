@@ -1,4 +1,4 @@
-use crate::comglue::glue::{maybe_init_logger, IRTDUpdateEventWrap};
+use crate::comglue::{dispatch::IRTDUpdateEventWrap, maybe_init_logger};
 use anyhow::Result;
 use futures::{channel::mpsc, prelude::*};
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
