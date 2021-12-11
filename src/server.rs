@@ -1,4 +1,4 @@
-use crate::comglue::{dispatch::IRTDUpdateEventWrap, maybe_init_logger};
+use crate::comglue::{self, dispatch::IRTDUpdateEventWrap};
 use anyhow::Result;
 use futures::{channel::mpsc, prelude::*};
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
@@ -50,9 +50,8 @@ pub struct Server(Arc<Mutex<ServerInner>>);
 
 impl Default for Server {
     fn default() -> Self {
-        maybe_init_logger();
-        debug!("default()");
-        Self::new()
+        let cfg = *comglue::CONFIG;
+        Self::new(cfg)
     }
 }
 
@@ -88,16 +87,19 @@ impl Server {
         debug!("updates loop terminated")
     }
 
-    pub(crate) fn new() -> Server {
-        maybe_init_logger();
+    pub(crate) fn new(cfg: comglue::Config) -> Server {
         debug!("init runtime");
         let runtime = Runtime::new().expect("could not init async runtime");
         debug!("init subscriber");
         let subscriber = runtime
             .block_on(async {
+                let auth = match cfg.auth_mechanism {
+                    comglue::Auth::Anonymous => Auth::Anonymous,
+                    comglue::Auth::Kerberos => Auth::Krb5 { spn: None, upn: None },
+                };
                 let config =
                     Config::load_default().expect("could not load netidx config");
-                Subscriber::new(config, Auth::Krb5 { spn: None, upn: None })
+                Subscriber::new(config, auth)
             })
             .expect("could not init netidx subscriber");
         let (tx, rx) = runtime.block_on(async { mpsc::channel(3) });

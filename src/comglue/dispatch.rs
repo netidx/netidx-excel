@@ -1,7 +1,6 @@
 use crate::comglue::{
     interface::IID_IDISPATCH,
     variant::{str_to_wstr, Variant},
-    maybe_init_logger
 };
 use anyhow::{anyhow, Result};
 use log::{debug, error};
@@ -79,7 +78,6 @@ unsafe fn irtd_update_event_loop(
 }
 
 unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
-    maybe_init_logger();
     let args = Box::from_raw(ptr.cast::<IRTDUpdateEventThreadArgs>());
     match CoInitialize(ptr::null_mut()) {
         Ok(()) => (),

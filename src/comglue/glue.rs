@@ -2,7 +2,6 @@ use crate::{
     comglue::{
         dispatch::IRTDUpdateEventWrap,
         interface::{IDispatch, IRTDServer, IRTDUpdateEvent},
-        maybe_init_logger,
         variant::{string_from_wstr, SafeArray, Variant},
     },
     server::{Server, TopicId},
@@ -146,7 +145,6 @@ com::class! {
 
     impl IDispatch for NetidxRTD {
         fn get_type_info_count(&self, info: *mut u32) -> HRESULT {
-            maybe_init_logger();
             debug!("get_type_info_count(info: {})", unsafe { *info });
             if !info.is_null() {
                 unsafe { *info = 0; } // no we don't support type info
@@ -164,7 +162,6 @@ com::class! {
             lcid: u32,
             ids: *mut i32
         ) -> HRESULT {
-            maybe_init_logger();
             debug!("get_ids_of_names(riid: {:?}, names: {:?}, names_len: {}, lcid: {}, ids: {:?})", riid, names, names_len, lcid, ids);
             if !ids.is_null() && !names.is_null() {
                 for i in 0..names_len {
@@ -196,7 +193,6 @@ com::class! {
             exception: *mut EXCEPINFO,
             arg_error: *mut u32
         ) -> HRESULT {
-            maybe_init_logger();
             debug!(
                 "invoke(id: {}, iid: {:?}, lcid: {}, flags: {}, params: {:?}, result: {:?}, exception: {:?}, arg_error: {:?})",
                 id, iid, lcid, flags, params, result, exception, arg_error
@@ -271,26 +267,32 @@ com::class! {
 
     impl IRTDServer for NetidxRTD {
         fn server_start(&self, _cb: *const IRTDUpdateEvent, _res: *mut i32) -> HRESULT {
+            debug!("ServerStart called directly");
             NOERROR
         }
 
         fn connect_data(&self, _topic_id: i32, _topic: *const SAFEARRAY, _get_new_values: *mut VARIANT, _res: *mut VARIANT) -> HRESULT {
+            debug!("ConnectData called directly");
             NOERROR
         }
 
         fn refresh_data(&self, _topic_count: *mut i32, _data: *mut SAFEARRAY) -> HRESULT {
+            debug!("RefreshData called directly");
             NOERROR
         }
 
         fn disconnect_data(&self, _topic_id: i32) -> HRESULT {
+            debug!("DisconnectData called directly");
             NOERROR
         }
 
         fn heartbeat(&self, _res: *mut i32) -> HRESULT {
+            debug!("Heartbeat called directly");
             NOERROR
         }
 
         fn server_terminate(&self) -> HRESULT {
+            debug!("ServerTerminate called directly");
             NOERROR
         }
     }
