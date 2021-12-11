@@ -10,7 +10,7 @@ E.G. You have published some data, e.gl from the shell publisher, and you want t
 
 If you install the add-in on you bosses' machine, then he can pull that data into a cell in an Excel spreadsheet, and you can stop worrying about how to present results to pointy haired types and get your job done.
 
-![Example](./example.png)
+![Example](example.png)
 
 The key point is if a value in netidx updates, Excel will update almost immediatly, and your bosses pivot table will update too. csv exports are one step closer to dieing!
 # Syntax
@@ -25,7 +25,7 @@ The key point is if a value in netidx updates, Excel will update almost immediat
 
 Even if you subscribe to a lot of data, or you subscribe to data that updates quickly, Excel should remain responsive because RTDs are throttled, and all the netidx processing is happening on a background thread pool. For example here Excel is maxing out my wifi network by subscribing to the stress publisher, however it remains completely responsive. It's actually pulling in 2 million updates per second, and that's limited by the network, not the cpu.
 
-![Performance](./perf.png)
+![Performance](perf.png)
 
 # Building
 
