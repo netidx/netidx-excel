@@ -2,6 +2,13 @@
 name = "netidx-excel"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "Pull Netidx data into Excel with RTD"
+homepage = "https://estokes.github.io/netidx-book/"
+repository = "https://github.com/estokes/netidx-excel/"
+readme = "README.md"
+keywords = ["network", "networking", "distributed", "kerberos"]
+categories = ["network-programming"]
 
 [dependencies]
 com = { version = "0.6", features = ["production"] }

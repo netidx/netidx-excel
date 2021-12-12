@@ -2,9 +2,10 @@
 extern crate serde_derive;
 mod comglue;
 mod server;
+use anyhow::Result;
 use com::{
     production::Class,
-    sys::{CLASS_E_CLASSNOTAVAILABLE, CLSID, HRESULT, IID, NOERROR},
+    sys::{CLASS_E_CLASSNOTAVAILABLE, CLSID, HRESULT, IID, NOERROR, SELFREG_E_CLASS},
 };
 use comglue::glue::NetidxRTD;
 use comglue::interface::CLSID;
@@ -73,32 +74,39 @@ fn clsid(id: CLSID) -> String {
     format!("{{{}}}", id)
 }
 
+fn dll_register_server() -> Result<()> {
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let (by_name, _) = hkcr.create_subkey("NetidxRTD\\CLSID")?;
+    let clsid = clsid(CLSID);
+    by_name.set_value("", &clsid)?;
+    let (by_id, _) = hkcr.create_subkey(&format!("CLSID\\{}", &clsid))?;
+    let (by_id_inproc, _) = by_id.create_subkey("InprocServer32")?;
+    by_id.set_value(&"", &"NetidxRTD")?;
+    by_id_inproc.set_value("", &unsafe { get_dll_file_path(_HMODULE) })?;
+    Ok(())
+}
+
 #[no_mangle]
 extern "system" fn DllRegisterServer() -> HRESULT {
+    match dll_register_server() {
+        Err(_) => SELFREG_E_CLASS,
+        Ok(()) => NOERROR
+    }
+}
+
+fn dll_unregister_server() -> Result<()> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let (by_name, _) = hkcr
-        .create_subkey("NetidxRTD\\CLSID")
-        .expect("could not create subkey NetidxRTD");
     let clsid = clsid(CLSID);
-    by_name.set_value("", &clsid).expect("could not map NetidxRTD -> CLSID");
-    let (by_id, _) = hkcr
-        .create_subkey(&format!("CLSID\\{}", &clsid))
-        .expect("couldn't create CLSID mapping");
-    let (by_id_inproc, _) =
-        by_id.create_subkey("InprocServer32").expect("coudn't create inproc server 32");
-    by_id.set_value(&"", &"NetidxRTD").expect("could not set by_id value");
-    by_id_inproc
-        .set_value("", &unsafe { get_dll_file_path(_HMODULE) })
-        .expect("could not set file path");
-    NOERROR
+    hkcr.delete_subkey_all("NetidxRTD")?;
+    assert!(clsid.len() > 0);
+    hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
+    Ok(())
 }
 
 #[no_mangle]
 extern "system" fn DllUnregisterServer() -> HRESULT {
-    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
-    let clsid = clsid(CLSID);
-    hkcr.delete_subkey_all("NetidxRTD").expect("could not remove by name mapping");
-    assert!(clsid.len() > 0);
-    hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid)).expect("could not delete class id");
-    NOERROR
+    match dll_unregister_server() {
+        Err(_) => SELFREG_E_CLASS,
+        Ok(()) => NOERROR
+    }
 }
