@@ -53,6 +53,12 @@ To install you need to decide where you want the dll to live, it really doesn't 
 
 The most common errors are `regsvr32` isn't in your path, and/or your shell is not running with admin rights.
 
+You might also need to open the properties of the dll and "unblock" it (if you downloaded a binary instead of building it yourself).
+
+## 32 bit office on 64 bit windows
+
+If you are running the 32 bit version of office, maybe because you have limited ram, then you will need to also install the netidx_excel32.dll, and you will need to run regsvr32 on that as well, just like the above. If you are building from source you will need to install the target `i686-pc-windows-msvc` and build the 32 bit dll with that target, e.g. `cargo build --target i686-pc-windows-msvc --release`, and then the dll will be in `target/i686-pc-windows-msvc/release` instead of `target/release`.
+
 # Limitations
 
 - No write support; there's no real reason other than time, it's perfectly possible
