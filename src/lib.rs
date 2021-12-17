@@ -109,7 +109,9 @@ extern "system" fn DllRegisterServer() -> HRESULT {
 fn dll_unregister_server() -> Result<()> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let clsid = clsid(CLSID);
-    hkcr.delete_subkey_all("NetidxRTD")?;
+    if let Ok(_) = hkcr.open_subkey("NetidxRTD") {
+        hkcr.delete_subkey_all("NetidxRTD")?;
+    }
     assert!(clsid.len() > 0);
     if mem::size_of::<usize>() == 8 {
         hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
