@@ -109,17 +109,10 @@ extern "system" fn DllRegisterServer() -> HRESULT {
 fn dll_unregister_server() -> Result<()> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let clsid = clsid(CLSID);
-    if let Ok(_) = hkcr.open_subkey("NetidxRTD") {
-        hkcr.delete_subkey_all("NetidxRTD")?;
-    }
+    hkcr.delete_subkey_all("NetidxRTD")?;
     assert!(clsid.len() > 0);
-    if mem::size_of::<usize>() == 8 {
-        hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
-    } else if mem::size_of::<usize>() == 4 {
-        hkcr.delete_subkey_all(&format!("WOW6432Node\\CLSID\\{}", clsid))?;
-    } else {
-        bail!("could not determine the word size")
-    }
+    hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
+    hkcr.delete_subkey_all(&format!("WOW6432Node\\CLSID\\{}", clsid))?;
     Ok(())
 }
 
