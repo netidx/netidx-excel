@@ -1,0 +1,4 @@
+0.1.1
+- Support 32 bit office on 64 bit windows (I guess this happens automatically if you don't have much memory)
+
+0.1.0 Initial release
