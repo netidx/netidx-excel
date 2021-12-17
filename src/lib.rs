@@ -2,14 +2,14 @@
 extern crate serde_derive;
 mod comglue;
 mod server;
-use anyhow::Result;
+use anyhow::{bail, Result};
 use com::{
     production::Class,
     sys::{CLASS_E_CLASSNOTAVAILABLE, CLSID, HRESULT, IID, NOERROR, SELFREG_E_CLASS},
 };
 use comglue::glue::NetidxRTD;
 use comglue::interface::CLSID;
-use std::{ffi::c_void, ptr};
+use std::{ffi::c_void, mem, ptr};
 
 // sadly this doesn't register the class name, just the ID, so we must do all the
 // registration ourselves because excel requires the name to be mapped to the id
@@ -74,15 +74,27 @@ fn clsid(id: CLSID) -> String {
     format!("{{{}}}", id)
 }
 
+fn register_clsid(root: &RegKey, clsid: &String) -> Result<()> {
+    let (by_id, _) = root.create_subkey(&format!("CLSID\\{}", &clsid))?;
+    let (by_id_inproc, _) = by_id.create_subkey("InprocServer32")?;
+    by_id.set_value(&"", &"NetidxRTD")?;
+    by_id_inproc.set_value("", &unsafe { get_dll_file_path(_HMODULE) })?;
+    Ok(())
+}
+
 fn dll_register_server() -> Result<()> {
     let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
     let (by_name, _) = hkcr.create_subkey("NetidxRTD\\CLSID")?;
     let clsid = clsid(CLSID);
     by_name.set_value("", &clsid)?;
-    let (by_id, _) = hkcr.create_subkey(&format!("CLSID\\{}", &clsid))?;
-    let (by_id_inproc, _) = by_id.create_subkey("InprocServer32")?;
-    by_id.set_value(&"", &"NetidxRTD")?;
-    by_id_inproc.set_value("", &unsafe { get_dll_file_path(_HMODULE) })?;
+    if mem::size_of::<usize>() == 8 {
+        register_clsid(&hkcr, &clsid)?;
+    } else if mem::size_of::<usize>() == 4 {
+        let wow = hkcr.open_subkey("WOW6432Node")?;
+        register_clsid(&wow, &clsid)?;
+    } else {
+        bail!("can't figure out the word size")
+    }
     Ok(())
 }
 
@@ -90,7 +102,7 @@ fn dll_register_server() -> Result<()> {
 extern "system" fn DllRegisterServer() -> HRESULT {
     match dll_register_server() {
         Err(_) => SELFREG_E_CLASS,
-        Ok(()) => NOERROR
+        Ok(()) => NOERROR,
     }
 }
 
@@ -99,7 +111,13 @@ fn dll_unregister_server() -> Result<()> {
     let clsid = clsid(CLSID);
     hkcr.delete_subkey_all("NetidxRTD")?;
     assert!(clsid.len() > 0);
-    hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
+    if mem::size_of::<usize>() == 8 {
+        hkcr.delete_subkey_all(&format!("CLSID\\{}", clsid))?;
+    } else if mem::size_of::<usize>() == 4 {
+        hkcr.delete_subkey_all(&format!("WOW6432Node\\CLSID\\{}", clsid))?;
+    } else {
+        bail!("could not determine the word size")
+    }
     Ok(())
 }
 
@@ -107,6 +125,6 @@ fn dll_unregister_server() -> Result<()> {
 extern "system" fn DllUnregisterServer() -> HRESULT {
     match dll_unregister_server() {
         Err(_) => SELFREG_E_CLASS,
-        Ok(()) => NOERROR
+        Ok(()) => NOERROR,
     }
 }
