@@ -7,8 +7,7 @@ use netidx::{
     config::Config,
     path::Path,
     pool::{Pool, Pooled},
-    resolver::Auth,
-    subscriber::{Dval, Event, SubId, Subscriber, UpdatesFlags},
+    subscriber::{Dval, Event, SubId, Subscriber, UpdatesFlags, DesiredAuth},
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -94,8 +93,8 @@ impl Server {
         let subscriber = runtime
             .block_on(async {
                 let auth = match cfg.auth_mechanism {
-                    comglue::Auth::Anonymous => Auth::Anonymous,
-                    comglue::Auth::Kerberos => Auth::Krb5 { spn: None, upn: None },
+                    comglue::Auth::Anonymous => DesiredAuth::Anonymous,
+                    comglue::Auth::Kerberos => DesiredAuth::Krb5 { spn: None, upn: None },
                 };
                 let config =
                     Config::load_default().expect("could not load netidx config");
