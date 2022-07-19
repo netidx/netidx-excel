@@ -1,3 +1,8 @@
+0.1.2
+- updgrade dependencies
+- support netidx 0.11
+- don't crash excel if initialization fails
+
 0.1.1
 - Support 32 bit office on 64 bit windows (I guess this happens automatically if you don't have much memory)
 
