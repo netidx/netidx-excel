@@ -6,9 +6,8 @@ use anyhow::{anyhow, Result};
 use log::{debug, error};
 use std::{boxed::Box, ffi::c_void, ptr, sync::mpsc, thread, time::Duration};
 use windows::{
-    core::GUID,
+    core::{GUID, PWSTR},
     Win32::{
-        Foundation::PWSTR,
         System::{
             Com::{
                 self, CoInitialize, CoUninitialize, IStream,
@@ -98,12 +97,11 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
         }
     };
     let mut update_notify = str_to_wstr("UpdateNotify");
-    let mut dispid = 0x0;
+    let mut dispid = [0x0];
     debug!("get_dispids: calling GetIDsOfNames");
     let hr = idp.GetIDsOfNames(
         &GUID::zeroed(),
-        &PWSTR(update_notify.as_mut_ptr()),
-        1,
+        &[PWSTR(update_notify.as_mut_ptr())],
         1000,
         &mut dispid,
     );
@@ -112,7 +110,7 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
         error!("update_event_thread: could not get names {}", e);
     }
     debug!("update_event_thread, init done, calling event loop");
-    irtd_update_event_loop(dispid, args.rx, idp);
+    irtd_update_event_loop(dispid[0], args.rx, idp);
     CoUninitialize();
     0
 }

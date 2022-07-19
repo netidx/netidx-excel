@@ -10,9 +10,9 @@ use std::{
     ptr,
 };
 use windows::{
-    core::Abi,
+    core::PCWSTR,
     Win32::{
-        Foundation::{SysAllocStringLen, PWSTR},
+        Foundation::SysAllocStringLen,
         Globalization::lstrlenW,
         System::{
             Com::{IDispatch, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0},
@@ -28,7 +28,7 @@ use windows::{
 };
 
 pub unsafe fn string_from_wstr<'a>(s: *mut u16) -> OsString {
-    OsString::from_wide(std::slice::from_raw_parts(s, lstrlenW(PWSTR(s)) as usize))
+    OsString::from_wide(std::slice::from_raw_parts(s, lstrlenW(PCWSTR(s)) as usize))
 }
 
 pub fn str_to_wstr(s: &str) -> Vec<u16> {
@@ -106,10 +106,8 @@ impl<'a> TryInto<String> for &'a Variant {
         if self.typ() != VT_BSTR {
             bail!("not a string")
         } else {
-            unsafe {
-                let s = &*self.val().bstrVal;
-                Ok(string_from_wstr(s.0).to_string_lossy().to_string())
-            }
+            let s = unsafe { &*self.val().bstrVal };
+            Ok(OsString::from_wide(s.as_wide()).to_string_lossy().to_string())
         }
     }
 }
@@ -122,8 +120,10 @@ impl<'a> TryInto<IDispatch> for &'a Variant {
             bail!("not an IDispatch interface")
         } else {
             unsafe {
-                Ok(IDispatch::from_abi(self.val().pdispVal)
-                    .map_err(|e| anyhow!(e.to_string()))?)
+                match &*self.val().pdispVal {
+                    None => bail!("null IDispatch interface"),
+                    Some(d) => Ok(d.clone())
+                }
             }
         }
     }
@@ -241,8 +241,7 @@ impl From<&str> for Variant {
         let mut v = Self::new();
         unsafe {
             v.set_typ(VT_BSTR);
-            let mut s = str_to_wstr(s);
-            let bs = SysAllocStringLen(PWSTR(s.as_mut_ptr()), s.len() as u32);
+            let bs = SysAllocStringLen(&*str_to_wstr(s));
             v.val_mut().bstrVal = mem::ManuallyDrop::new(bs);
             v
         }
