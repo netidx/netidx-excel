@@ -64,7 +64,7 @@ If you are running the 32 bit version of office, maybe because you have limited 
 - No write support; there's no real reason other than time, it's perfectly possible
 - No publish support; again, no real reason, perfectly possible, but significantly more time than write
 - No resolver list support; once again, time, no real problems with this
-- I could remove the requirment for admin rights to install if people cared, but then you'd have to `regsvr32` it for every user on a machine
+- I could remove the requirement for admin rights to install if people cared, but then you'd have to `regsvr32` it for every user on a machine
 
 # Other
 

@@ -1,5 +1,5 @@
 0.1.2
-- updgrade dependencies
+- upgrade dependencies
 - support netidx 0.11
 - don't crash excel if initialization fails
 
