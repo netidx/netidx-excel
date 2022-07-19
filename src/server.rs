@@ -2,12 +2,12 @@ use crate::comglue::{self, dispatch::IRTDUpdateEventWrap};
 use anyhow::Result;
 use futures::{channel::mpsc, prelude::*};
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
-use log::debug;
+use log::{debug, error};
 use netidx::{
     config::Config,
     path::Path,
     pool::{Pool, Pooled},
-    subscriber::{Dval, Event, SubId, Subscriber, UpdatesFlags, DesiredAuth},
+    subscriber::{DesiredAuth, Dval, Event, SubId, Subscriber, UpdatesFlags},
 };
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -45,7 +45,7 @@ impl ServerInner {
 }
 
 #[derive(Clone)]
-pub struct Server(Arc<Mutex<ServerInner>>);
+pub struct Server(Arc<Mutex<Option<ServerInner>>>);
 
 impl Default for Server {
     fn default() -> Self {
@@ -65,21 +65,22 @@ impl Server {
         debug!("updates loop started");
         while let Some(mut updates) = up.next().await {
             let mut inner = self.0.lock();
-            let inner = &mut *inner;
-            if let Some(update) = &mut inner.update {
-                let call_update = inner.pending.is_empty();
-                for (id, ev) in updates.drain(..) {
-                    if let Some(tids) = inner.by_id.get(&id) {
-                        let mut iter = tids.iter();
-                        for _ in 0..tids.len() - 1 {
-                            inner.pending.insert(*iter.next().unwrap(), ev.clone());
+            if let Some(inner) = &mut *inner {
+                if let Some(update) = &mut inner.update {
+                    let call_update = inner.pending.is_empty();
+                    for (id, ev) in updates.drain(..) {
+                        if let Some(tids) = inner.by_id.get(&id) {
+                            let mut iter = tids.iter();
+                            for _ in 0..tids.len() - 1 {
+                                inner.pending.insert(*iter.next().unwrap(), ev.clone());
+                            }
+                            inner.pending.insert(*iter.next().unwrap(), ev);
                         }
-                        inner.pending.insert(*iter.next().unwrap(), ev);
                     }
-                }
-                if call_update {
-                    debug!("calling update_notify");
-                    update.update_notify();
+                    if call_update {
+                        debug!("calling update_notify");
+                        update.update_notify();
+                    }
                 }
             }
         }
@@ -87,22 +88,35 @@ impl Server {
     }
 
     pub(crate) fn new(cfg: comglue::Config) -> Server {
+        macro_rules! or_err {
+            ($e:expr, $msg:expr) => {
+                match $e {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!($msg, e);
+                        return Server(Arc::new(Mutex::new(None)))
+                    }
+                }
+            }
+        }
         debug!("init runtime");
-        let runtime = Runtime::new().expect("could not init async runtime");
-        debug!("init subscriber");
-        let subscriber = runtime
-            .block_on(async {
-                let auth = match cfg.auth_mechanism {
-                    comglue::Auth::Anonymous => DesiredAuth::Anonymous,
-                    comglue::Auth::Kerberos => DesiredAuth::Krb5 { spn: None, upn: None },
-                };
-                let config =
-                    Config::load_default().expect("could not load netidx config");
-                Subscriber::new(config, auth)
-            })
-            .expect("could not init netidx subscriber");
+        let runtime = or_err!(Runtime::new(), "could not init async runtime {}");
+        debug!("entering async to init subscriber");
+        let subscriber: Result<Subscriber> = runtime.block_on(async {
+            debug!("running in async context");
+            let auth = match cfg.auth_mechanism {
+                comglue::Auth::Anonymous => DesiredAuth::Anonymous,
+                comglue::Auth::Kerberos => DesiredAuth::Krb5 { spn: None, upn: None },
+            };
+            debug!("loading config file");
+            let config = Config::load_default()?;
+            debug!("starting subscriber");
+            Ok(Subscriber::new(config, auth)?)
+        });
+        let subscriber = or_err!(subscriber, "could not init subscriber {}");
+        debug!("init updates channel");
         let (tx, rx) = runtime.block_on(async { mpsc::channel(3) });
-        let t = Server(Arc::new(Mutex::new(ServerInner {
+        let t = Server(Arc::new(Mutex::new(Some(ServerInner {
             runtime,
             update: None,
             subscriber,
@@ -110,59 +124,71 @@ impl Server {
             by_id: HashMap::with_hasher(FxBuildHasher::default()),
             by_topic: HashMap::with_hasher(FxBuildHasher::default()),
             pending: PENDING.take(),
-        })));
+        }))));
         let t_ = t.clone();
-        t.0.lock().runtime.spawn(t_.updates_loop(rx));
+        if let Some(inner) = &mut *t.0.lock() {
+            debug!("starting updates loop");
+            inner.runtime.spawn(t_.updates_loop(rx));
+        }
         t
     }
 
     pub(crate) fn server_start(&self, update: IRTDUpdateEventWrap) {
-        let mut inner = self.0.lock();
-        inner.clear();
-        inner.update = Some(update);
-        debug!("server_start");
+        if let Some(inner) = &mut *self.0.lock() {
+            inner.clear();
+            inner.update = Some(update);
+            debug!("server_start");
+        }
     }
 
     pub(crate) fn server_terminate(&self) {
-        self.0.lock().clear();
-        debug!("server_terminate");
+        if let Some(inner) = &mut *self.0.lock() {
+            inner.clear();
+            debug!("server_terminate");
+        }
     }
 
     pub(crate) fn connect_data(&self, tid: TopicId, path: Path) -> Result<()> {
         debug!("connect_data");
-        let mut inner = self.0.lock();
-        let dv = inner.subscriber.durable_subscribe(path);
-        inner.pending.insert(tid, dv.last());
-        if let Some(update) = inner.update.as_ref() {
-            update.update_notify()
+        if let Some(inner) = &mut *self.0.lock() {
+            let dv = inner.subscriber.durable_subscribe(path);
+            inner.pending.insert(tid, dv.last());
+            if let Some(update) = inner.update.as_ref() {
+                update.update_notify()
+            }
+            dv.updates(UpdatesFlags::BEGIN_WITH_LAST, inner.updates.clone());
+            inner
+                .by_id
+                .entry(dv.id())
+                .or_insert_with(|| HashSet::with_hasher(FxBuildHasher::default()))
+                .insert(tid);
+            inner.by_topic.insert(tid, dv);
         }
-        dv.updates(UpdatesFlags::BEGIN_WITH_LAST, inner.updates.clone());
-        inner
-            .by_id
-            .entry(dv.id())
-            .or_insert_with(|| HashSet::with_hasher(FxBuildHasher::default()))
-            .insert(tid);
-        inner.by_topic.insert(tid, dv);
         Ok(())
     }
 
     pub(crate) fn disconnect_data(&self, tid: TopicId) {
         debug!("disconnect_data");
-        let mut inner = self.0.lock();
-        inner.pending.remove(&tid);
-        if let Some(dv) = inner.by_topic.remove(&tid) {
-            if let Some(tids) = inner.by_id.get_mut(&dv.id()) {
-                tids.remove(&tid);
-                if tids.is_empty() {
-                    inner.by_id.remove(&dv.id());
+        if let Some(inner) = &mut *self.0.lock() {
+            inner.pending.remove(&tid);
+            if let Some(dv) = inner.by_topic.remove(&tid) {
+                if let Some(tids) = inner.by_id.get_mut(&dv.id()) {
+                    tids.remove(&tid);
+                    if tids.is_empty() {
+                        inner.by_id.remove(&dv.id());
+                    }
                 }
             }
         }
     }
 
     pub(crate) fn refresh_data(&self) -> Pooled<FxHashMap<TopicId, Event>> {
-        debug!("refresh_data");
-        let mut inner = self.0.lock();
-        mem::replace(&mut inner.pending, PENDING.take())
+        match &mut *self.0.lock() {
+            Some(inner) => {
+                debug!("refresh_data");
+                mem::replace(&mut inner.pending, PENDING.take())
+            }
+            None => Pooled::orphan(HashMap::default())
+        }
     }
 }
