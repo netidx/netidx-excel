@@ -4,19 +4,16 @@ use crate::comglue::{
 };
 use anyhow::{anyhow, Result};
 use log::{debug, error};
-use std::{boxed::Box, ffi::c_void, ptr, sync::mpsc, thread, time::Duration};
+use std::{boxed::Box, ffi::c_void, sync::mpsc, thread, time::Duration};
 use windows::{
     core::{GUID, PWSTR},
-    Win32::{
-        System::{
-            Com::{
-                self, CoInitialize, CoUninitialize, IStream,
-                Marshal::CoMarshalInterThreadInterfaceInStream,
-                StructuredStorage::CoGetInterfaceAndReleaseStream, DISPPARAMS,
-            },
-            Ole,
-            Threading::{CreateThread, THREAD_CREATION_FLAGS},
+    Win32::System::{
+        Com::{
+            self, CoInitialize, CoUninitialize, IStream,
+            Marshal::CoMarshalInterThreadInterfaceInStream,
+            StructuredStorage::CoGetInterfaceAndReleaseStream, DISPPARAMS,
         },
+        Threading::{CreateThread, THREAD_CREATION_FLAGS},
     },
 };
 
@@ -59,11 +56,11 @@ unsafe fn irtd_update_event_loop(
                 update_notify,
                 &GUID::zeroed(),
                 0,
-                Ole::DISPATCH_METHOD as u16,
+                Com::DISPATCH_METHOD,
                 &mut params,
-                result.as_mut_ptr(),
-                ptr::null_mut(),
-                &mut _arg_err,
+                Some(result.as_mut_ptr()),
+                None,
+                Some(&mut _arg_err),
             );
             match hr {
                 Ok(()) => break,
@@ -78,7 +75,7 @@ unsafe fn irtd_update_event_loop(
 
 unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
     let args = Box::from_raw(ptr.cast::<IRTDUpdateEventThreadArgs>());
-    match CoInitialize(ptr::null_mut()) {
+    match CoInitialize(None) {
         Ok(()) => (),
         Err(e) => {
             error!("update_event_thread: failed to initialize COM {}", e);
@@ -97,20 +94,18 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
         }
     };
     let mut update_notify = str_to_wstr("UpdateNotify");
-    let mut dispid = [0x0];
     debug!("get_dispids: calling GetIDsOfNames");
-    let hr = idp.GetIDsOfNames(
-        &GUID::zeroed(),
-        &[PWSTR(update_notify.as_mut_ptr())],
-        1000,
-        &mut dispid,
-    );
-    debug!("update_event_thread: called GetIDsOfNames dispids: {:?}", dispid);
-    if let Err(e) = hr {
-        error!("update_event_thread: could not get names {}", e);
-    }
-    debug!("update_event_thread, init done, calling event loop");
-    irtd_update_event_loop(dispid[0], args.rx, idp);
+    let hr =
+        idp.GetIDsOfNames(&GUID::zeroed(), &PWSTR(update_notify.as_mut_ptr()), 1, 1000);
+    let dispid = match hr {
+        Ok(id) => id,
+        Err(e) => {
+            error!("update_event_thread: could not get names {}", e);
+            return 0;
+        }
+    };
+    debug!("update_event_thread: called GetIDsOfNames dispid: {:?}", dispid);
+    irtd_update_event_loop(dispid, args.rx, idp);
     CoUninitialize();
     0
 }
@@ -120,18 +115,17 @@ pub struct IRTDUpdateEventWrap(mpsc::Sender<()>);
 impl IRTDUpdateEventWrap {
     pub unsafe fn new(disp: Com::IDispatch) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
-        let stream = CoMarshalInterThreadInterfaceInStream(&IDISPATCH_GUID, disp)
+        let stream = CoMarshalInterThreadInterfaceInStream(&IDISPATCH_GUID, &disp)
             .map_err(|e| anyhow!(e.to_string()))?;
         let args = Box::new(IRTDUpdateEventThreadArgs { stream, rx });
-        let mut threadid = 0u32;
         CreateThread(
-            ptr::null_mut(),
+            None,
             0,
             Some(irtd_update_event_thread),
-            Box::into_raw(args).cast::<c_void>(),
+            Some(Box::into_raw(args).cast::<c_void>()),
             THREAD_CREATION_FLAGS::default(),
-            &mut threadid,
-        );
+            None,
+        )?;
         Ok(IRTDUpdateEventWrap(tx))
     }
 

@@ -15,13 +15,15 @@ use windows::{
         Foundation::SysAllocStringLen,
         Globalization::lstrlenW,
         System::{
-            Com::{IDispatch, SAFEARRAY, SAFEARRAYBOUND, VARIANT, VARIANT_0_0_0},
+            Com::{
+                IDispatch, SAFEARRAY, SAFEARRAYBOUND, VARENUM, VARIANT, VARIANT_0_0_0,
+                VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_ERROR, VT_I4,
+                VT_I8, VT_NULL, VT_R4, VT_R8, VT_UI4, VT_UI8, VT_VARIANT,
+            },
             Ole::{
                 SafeArrayCreate, SafeArrayDestroy, SafeArrayGetDim, SafeArrayGetLBound,
                 SafeArrayGetUBound, SafeArrayGetVartype, SafeArrayLock,
-                SafeArrayPtrOfIndex, SafeArrayUnlock, VariantClear, VariantInit, VARENUM,
-                VT_ARRAY, VT_BOOL, VT_BSTR, VT_BYREF, VT_DISPATCH, VT_ERROR, VT_I4,
-                VT_I8, VT_NULL, VT_R4, VT_R8, VT_UI4, VT_UI8, VT_VARIANT,
+                SafeArrayPtrOfIndex, SafeArrayUnlock, VariantClear, VariantInit,
             },
         },
     },
@@ -122,7 +124,7 @@ impl<'a> TryInto<IDispatch> for &'a Variant {
             unsafe {
                 match &*self.val().pdispVal {
                     None => bail!("null IDispatch interface"),
-                    Some(d) => Ok(d.clone())
+                    Some(d) => Ok(d.clone()),
                 }
             }
         }
@@ -241,7 +243,7 @@ impl From<&str> for Variant {
         let mut v = Self::new();
         unsafe {
             v.set_typ(VT_BSTR);
-            let bs = SysAllocStringLen(&*str_to_wstr(s));
+            let bs = SysAllocStringLen(Some(&*str_to_wstr(s)));
             v.val_mut().bstrVal = mem::ManuallyDrop::new(bs);
             v
         }
@@ -311,11 +313,11 @@ impl Variant {
     }
 
     pub fn typ(&self) -> VARENUM {
-        VARENUM(unsafe { self.0.Anonymous.Anonymous.vt as i32 })
+        unsafe { self.0.Anonymous.Anonymous.vt }
     }
 
     unsafe fn set_typ(&mut self, typ: VARENUM) {
-        (*self.0.Anonymous.Anonymous).vt = typ.0 as u16;
+        (*self.0.Anonymous.Anonymous).vt = typ;
     }
 
     unsafe fn val(&self) -> &VARIANT_0_0_0 {
@@ -497,7 +499,7 @@ impl Drop for SafeArray {
 impl SafeArray {
     pub fn new(bounds: &[SAFEARRAYBOUND]) -> SafeArray {
         let t = unsafe {
-            SafeArrayCreate(VT_VARIANT.0 as u16, bounds.len() as u32, bounds.as_ptr())
+            SafeArrayCreate(VT_VARIANT, bounds.len() as u32, bounds.as_ptr())
         };
         SafeArray(t)
     }
@@ -505,7 +507,7 @@ impl SafeArray {
     unsafe fn check_pointer(p: *const SAFEARRAY) -> Result<()> {
         let typ = SafeArrayGetVartype(p)
             .map_err(|e| anyhow!("couldn't get safearray type {}", e.to_string()))?;
-        if typ != VT_VARIANT.0 as u16 {
+        if typ != VT_VARIANT {
             bail!("not a variant array")
         }
         Ok(())
