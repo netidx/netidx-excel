@@ -104,12 +104,14 @@ impl Server {
         debug!("entering async to init subscriber");
         let subscriber: Result<Subscriber> = runtime.block_on(async {
             debug!("running in async context");
-            let auth = match cfg.auth_mechanism {
-                comglue::Auth::Anonymous => DesiredAuth::Anonymous,
-                comglue::Auth::Kerberos => DesiredAuth::Krb5 { spn: None, upn: None },
-            };
             debug!("loading config file");
             let config = Config::load_default()?;
+            let auth = match cfg.auth_mechanism {
+                None => config.default_auth(),
+                Some(comglue::Auth::Anonymous) => DesiredAuth::Anonymous,
+                Some(comglue::Auth::Kerberos) => DesiredAuth::Krb5 { upn: None, spn: None },
+                Some(comglue::Auth::Tls) => DesiredAuth::Tls { name: None }
+            };
             debug!("starting subscriber");
             Ok(Subscriber::new(config, auth)?)
         });

@@ -18,17 +18,19 @@ use std::{
 pub enum Auth {
     Anonymous,
     Kerberos,
+    Tls,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Config {
     pub log_level: LevelFilter,
-    pub auth_mechanism: Auth,
+    #[serde(default)]
+    pub auth_mechanism: Option<Auth>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { log_level: LevelFilter::Off, auth_mechanism: Auth::Kerberos }
+        Config { log_level: LevelFilter::Off, auth_mechanism: None }
     }
 }
 
