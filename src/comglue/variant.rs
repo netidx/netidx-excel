@@ -44,11 +44,7 @@ pub struct Variant(VARIANT);
 
 impl Default for Variant {
     fn default() -> Self {
-        Variant(unsafe {
-            let mut v = mem::zeroed();
-            VariantInit(&mut v);
-            v
-        })
+        Variant(unsafe { VariantInit() })
     }
 }
 
@@ -67,7 +63,7 @@ impl<'a> TryInto<bool> for &'a Variant {
         } else {
             unsafe {
                 let v = self.val().boolVal;
-                if v == -1 {
+                if v.as_bool() {
                     Ok(true)
                 } else {
                     Ok(false)
@@ -166,7 +162,7 @@ impl From<bool> for Variant {
         let mut v = Self::new();
         unsafe {
             v.set_typ(VT_BOOL);
-            v.val_mut().boolVal = if b { -1 } else { 0 };
+            v.val_mut().boolVal.0 = if b { -1 } else { 0 };
             v
         }
     }
@@ -498,9 +494,8 @@ impl Drop for SafeArray {
 
 impl SafeArray {
     pub fn new(bounds: &[SAFEARRAYBOUND]) -> SafeArray {
-        let t = unsafe {
-            SafeArrayCreate(VT_VARIANT, bounds.len() as u32, bounds.as_ptr())
-        };
+        let t =
+            unsafe { SafeArrayCreate(VT_VARIANT, bounds.len() as u32, bounds.as_ptr()) };
         SafeArray(t)
     }
 

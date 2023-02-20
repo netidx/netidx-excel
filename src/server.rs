@@ -94,10 +94,10 @@ impl Server {
                     Ok(r) => r,
                     Err(e) => {
                         error!($msg, e);
-                        return Server(Arc::new(Mutex::new(None)))
+                        return Server(Arc::new(Mutex::new(None)));
                     }
                 }
-            }
+            };
         }
         debug!("init runtime");
         let runtime = or_err!(Runtime::new(), "could not init async runtime {}");
@@ -109,8 +109,10 @@ impl Server {
             let auth = match cfg.auth_mechanism {
                 None => config.default_auth(),
                 Some(comglue::Auth::Anonymous) => DesiredAuth::Anonymous,
-                Some(comglue::Auth::Kerberos) => DesiredAuth::Krb5 { upn: None, spn: None },
-                Some(comglue::Auth::Tls) => DesiredAuth::Tls { name: None }
+                Some(comglue::Auth::Kerberos) => {
+                    DesiredAuth::Krb5 { upn: None, spn: None }
+                }
+                Some(comglue::Auth::Tls) => DesiredAuth::Tls { identity: None },
             };
             debug!("starting subscriber");
             Ok(Subscriber::new(config, auth)?)
@@ -153,7 +155,7 @@ impl Server {
     pub(crate) fn connect_data(&self, tid: TopicId, path: Path) -> Result<()> {
         debug!("connect_data");
         if let Some(inner) = &mut *self.0.lock() {
-            let dv = inner.subscriber.durable_subscribe(path);
+            let dv = inner.subscriber.subscribe(path);
             inner.pending.insert(tid, dv.last());
             if let Some(update) = inner.update.as_ref() {
                 update.update_notify()
@@ -190,7 +192,7 @@ impl Server {
                 debug!("refresh_data");
                 mem::replace(&mut inner.pending, PENDING.take())
             }
-            None => Pooled::orphan(HashMap::default())
+            None => Pooled::orphan(HashMap::default()),
         }
     }
 }

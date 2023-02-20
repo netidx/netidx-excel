@@ -87,6 +87,10 @@ fn variant_of_value(v: &Value) -> Variant {
         Value::U64(v) | Value::V64(v) => Variant::from(*v),
         Value::F32(v) => Variant::from(*v),
         Value::F64(v) => Variant::from(*v),
+        Value::Decimal(d) => match f64::try_from(*d) {
+            Ok(v) => Variant::from(v),
+            Err(e) => Variant::from(&format!("ERR {}", e)),
+        },
         Value::True => Variant::from(true),
         Value::False => Variant::from(false),
         Value::String(s) => Variant::from(&**s),

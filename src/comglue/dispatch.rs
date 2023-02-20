@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use log::{debug, error};
 use std::{boxed::Box, ffi::c_void, sync::mpsc, thread, time::Duration};
 use windows::{
-    core::{GUID, PWSTR},
+    core::{GUID, PCWSTR},
     Win32::System::{
         Com::{
             self, CoInitialize, CoUninitialize, IStream,
@@ -94,18 +94,24 @@ unsafe extern "system" fn irtd_update_event_thread(ptr: *mut c_void) -> u32 {
         }
     };
     let mut update_notify = str_to_wstr("UpdateNotify");
+    let mut dispids = [0i32];
     debug!("get_dispids: calling GetIDsOfNames");
-    let hr =
-        idp.GetIDsOfNames(&GUID::zeroed(), &PWSTR(update_notify.as_mut_ptr()), 1, 1000);
-    let dispid = match hr {
-        Ok(id) => id,
+    let hr = idp.GetIDsOfNames(
+        &GUID::zeroed(),
+        &PCWSTR(update_notify.as_mut_ptr()) as *const PCWSTR,
+        1,
+        1000,
+        &mut dispids as *mut i32,
+    );
+    match hr {
+        Ok(()) => (),
         Err(e) => {
             error!("update_event_thread: could not get names {}", e);
             return 0;
         }
-    };
-    debug!("update_event_thread: called GetIDsOfNames dispid: {:?}", dispid);
-    irtd_update_event_loop(dispid, args.rx, idp);
+    }
+    debug!("update_event_thread: called GetIDsOfNames dispid: {:?}", dispids);
+    irtd_update_event_loop(dispids[0], args.rx, idp);
     CoUninitialize();
     0
 }
